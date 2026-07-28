@@ -9,6 +9,14 @@ export interface GatewayConfig {
   agentEffort: "low" | "medium" | "high";
   /** How long a /v1/chat/completions call waits before converting to a background task. */
   quickAnswerTimeoutMs: number;
+  /**
+   * Return an acknowledgement immediately instead of racing the agent against a
+   * deadline. A voice turn wants a reply in the assistant's own voice within a
+   * beat, not the right answer eight seconds later -- and once the request never
+   * carries the result, there is no deadline left to pick and no inline-vs-
+   * deferred branch to land on the wrong side of.
+   */
+  spawnMode: boolean;
 }
 
 function parseTokens(raw: string | undefined): Map<string, string> {
@@ -28,6 +36,7 @@ export const config: GatewayConfig = {
   agentModel: process.env.AGENT_MODEL ?? "claude-opus-5",
   agentEffort: (process.env.AGENT_EFFORT as GatewayConfig["agentEffort"]) ?? "medium",
   quickAnswerTimeoutMs: Number(process.env.QUICK_ANSWER_TIMEOUT_MS ?? 30_000),
+  spawnMode: process.env.SPAWN_MODE !== "false",
 };
 
 if (config.tokens.size === 0) {

@@ -15,6 +15,22 @@ initStore(config.storePath);
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+/**
+ * What the voice model receives the instant a task is spawned.
+ *
+ * Deliberately an instruction, not a sentence to speak: a fixed string ("I'm
+ * still working on that") gets read out verbatim and sounds like a status
+ * message, whereas telling the model to acknowledge in its own words produces
+ * cover that fits the conversation it is already having. The "do not answer
+ * from memory" clause matters -- without it the model happily invents a
+ * calendar rather than waiting for the real one.
+ */
+const SPAWN_ACK =
+  "[task started] The request is running in the background. Tell the user briefly and naturally, " +
+  "in your own words, that you're on it -- one short sentence, no promises about timing. " +
+  "Do NOT answer the question yourself or guess at the content; the real result will arrive " +
+  "shortly as a follow-up message for you to relay.";
+
 // ---------- auth ----------
 
 function userFromRequest(header: string | undefined): string | null {
@@ -93,19 +109,26 @@ app.post("/v1/chat/completions", async (req, res) => {
       clientDone = true;
     });
 
-    // Past the wait budget the client gets an ack and the drain continues in
-    // the background; the final text is delivered as a proactive notification.
-    const capTimer = setTimeout(
-      () => finishClient("\n\nI'm still working on that. I'll let you know the moment it's done."),
-      config.quickAnswerTimeoutMs,
-    );
+    // In spawn mode the request never carries the result: acknowledge now, keep
+    // draining, and deliver the answer over the WebSocket when it lands. The ack
+    // is an instruction rather than a line to read out, so the cover comes back
+    // in the assistant's own voice instead of a canned status message.
+    if (config.spawnMode) finishClient(SPAWN_ACK);
+
+    // Otherwise race the agent against the budget; past it, same deferral.
+    const capTimer = config.spawnMode
+      ? null
+      : setTimeout(
+          () => finishClient("\n\nI'm still working on that. I'll let you know the moment it's done."),
+          config.quickAnswerTimeoutMs,
+        );
 
     try {
       const wasCappedBeforeFinal = () => clientDone;
       const finalText = await runTurnStreaming(sessionId, lastUser, drainContext(userId), (text) => {
         if (!clientDone) res.write(chunk({ content: text }));
       });
-      clearTimeout(capTimer);
+      if (capTimer) clearTimeout(capTimer);
       if (wasCappedBeforeFinal()) {
         if (finalText && !notifyUser(userId, finalText)) {
           console.warn(`[turn] late streamed result for ${userId} had no connected client`);
@@ -114,7 +137,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         finishClient();
       }
     } catch (err) {
-      clearTimeout(capTimer);
+      if (capTimer) clearTimeout(capTimer);
       console.error("[chat] streaming turn failed:", err);
       finishClient("Something went wrong while working on that. Try again in a moment.");
     }
@@ -127,7 +150,7 @@ app.post("/v1/chat/completions", async (req, res) => {
     const result = await runTurn(
       sessionId,
       lastUser,
-      config.quickAnswerTimeoutMs,
+      config.spawnMode ? 0 : config.quickAnswerTimeoutMs,
       (lateText) => {
         const delivered = notifyUser(userId, lateText);
         if (!delivered) console.warn(`[turn] late result for ${userId} had no connected client`);
@@ -136,7 +159,9 @@ app.post("/v1/chat/completions", async (req, res) => {
     );
 
     const content = result.deferred
-      ? "I'm still working on that. I'll let you know the moment it's done."
+      ? config.spawnMode
+        ? SPAWN_ACK
+        : "I'm still working on that. I'll let you know the moment it's done."
       : (result.text ?? "Done.");
 
     res.json({

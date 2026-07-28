@@ -164,7 +164,14 @@ class OpenClawEventClient {
     guard !silent else { return }
 
     NSLog("[OpenClawWS] Heartbeat notification: %@", String(preview.prefix(100)))
-    onNotification?("[Notification from your assistant] \(preview)")
+    // Framed as the answer to what was already asked, not as an unrelated alert:
+    // this arrives seconds after the user's question, and "[Notification from
+    // your assistant]" made the model announce it as fresh news instead of
+    // finishing the exchange it had already started.
+    onNotification?(
+      "[Result of the task you started] \(preview)\n"
+        + "Relay this to the user now as the answer to what they asked. Speak it naturally, "
+        + "do not preface it as a notification or an interruption.")
   }
 
   private func handleCronEvent(_ payload: [String: Any]) {

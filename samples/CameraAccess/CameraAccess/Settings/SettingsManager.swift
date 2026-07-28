@@ -69,10 +69,12 @@ final class SettingsManager {
 
   // MARK: - Agent backend selection
 
+  /// Cloud by default: the hosted gateway needs nothing installed and keeps
+  /// working with the phone away from home, which self-hosting cannot do.
   var agentBackend: AgentBackend {
     get {
       guard let raw = defaults.string(forKey: Key.agentBackend.rawValue),
-            let backend = AgentBackend(rawValue: raw) else { return .selfHosted }
+            let backend = AgentBackend(rawValue: raw) else { return .cloud }
       return backend
     }
     set { defaults.set(newValue.rawValue, forKey: Key.agentBackend.rawValue) }
@@ -80,12 +82,12 @@ final class SettingsManager {
 
   /// Full base URL of the hosted gateway, scheme included (e.g. "https://gw.example.com" or "http://1.2.3.4:8788").
   var cloudGatewayURL: String {
-    get { defaults.string(forKey: Key.cloudGatewayURL.rawValue) ?? "" }
+    get { defaults.string(forKey: Key.cloudGatewayURL.rawValue) ?? Secrets.cloudGatewayURL }
     set { defaults.set(newValue, forKey: Key.cloudGatewayURL.rawValue) }
   }
 
   var cloudGatewayToken: String {
-    get { defaults.string(forKey: Key.cloudGatewayToken.rawValue) ?? "" }
+    get { defaults.string(forKey: Key.cloudGatewayToken.rawValue) ?? Secrets.cloudGatewayToken }
     set { defaults.set(newValue, forKey: Key.cloudGatewayToken.rawValue) }
   }
 

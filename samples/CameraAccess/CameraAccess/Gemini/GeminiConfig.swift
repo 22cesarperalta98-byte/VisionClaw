@@ -89,7 +89,11 @@ enum GeminiConfig {
       return isOpenClawConfigured
     case .cloud:
       let url = SettingsManager.shared.cloudGatewayURL
-      return !url.isEmpty && url.hasPrefix("http") && !SettingsManager.shared.cloudGatewayToken.isEmpty
+      let token = SettingsManager.shared.cloudGatewayToken
+      // An unfilled Secrets.swift.example placeholder is not empty, so without
+      // this a fresh clone reports "configured" and then fails with a 401 that
+      // looks like a server problem rather than a missing token.
+      return !url.isEmpty && url.hasPrefix("http") && !token.isEmpty && !token.hasPrefix("YOUR_")
     }
   }
 }
