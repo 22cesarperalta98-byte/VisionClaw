@@ -60,24 +60,6 @@ struct SettingsView: View {
   var body: some View {
     NavigationView {
       Form {
-        Section(header: Text("Gemini API")) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("API Key")
-              .font(.caption)
-              .foregroundColor(.secondary)
-            TextField("Enter Gemini API key", text: $geminiAPIKey)
-              .autocapitalization(.none)
-              .disableAutocorrection(true)
-              .font(.system(.body, design: .monospaced))
-          }
-        }
-
-        Section(header: Text("System Prompt"), footer: Text("Customize the AI assistant's behavior and personality. Changes take effect on the next Gemini session.")) {
-          TextEditor(text: $geminiSystemPrompt)
-            .font(.system(.body, design: .monospaced))
-            .frame(minHeight: 200)
-        }
-
         Section(header: Text("Action Agent"), footer: Text(selectedBackend == .cloud
           ? "Runs in the cloud. Nothing to install, and it keeps working when your computer is asleep."
           : "Runs on your own machine. Requires OpenClaw installed and running, and stops when that machine sleeps.")) {
@@ -203,6 +185,26 @@ struct SettingsView: View {
         Section(header: Text("Notifications"), footer: Text("Receive proactive updates from OpenClaw (heartbeat, scheduled tasks) spoken through the glasses.")) {
           Toggle("Proactive Notifications", isOn: $proactiveNotificationsEnabled)
         }
+
+        Section(header: Text("System Prompt"), footer: Text("Customize the AI assistant's behavior and personality. Changes take effect on the next Gemini session.")) {
+          TextEditor(text: $geminiSystemPrompt)
+            .font(.system(.body, design: .monospaced))
+            .frame(minHeight: 200)
+        }
+
+
+        Section(header: Text("Gemini API")) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("API Key")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            TextField("Enter Gemini API key", text: $geminiAPIKey)
+              .autocapitalization(.none)
+              .disableAutocorrection(true)
+              .font(.system(.body, design: .monospaced))
+          }
+        }
+
 
         Section {
           Button("Reset to Defaults") {

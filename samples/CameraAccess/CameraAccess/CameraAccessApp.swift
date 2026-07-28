@@ -95,7 +95,9 @@ private struct WearablesRootView: View {
 /// Shown when the Wearables SDK is unavailable. Everything that does not need
 /// glasses -- backend selection, connected apps, task history -- still works.
 private struct NoWearablesView: View {
-  @State private var showSettings = false
+  /// `-openSettings` presents Settings at launch, so the screen can be captured
+  /// on a simulator with no GUI to tap through.
+  @State private var showSettings = ProcessInfo.processInfo.arguments.contains("-openSettings")
 
   var body: some View {
     VStack(spacing: 16) {
