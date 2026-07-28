@@ -14,6 +14,7 @@
 // video frame handling, photo capture, and error handling.
 //
 
+import AVFoundation
 import CoreImage
 import CoreMedia
 import CoreVideo
@@ -78,6 +79,10 @@ class StreamSessionViewModel: ObservableObject {
   private let deviceSelector: AutoDeviceSelector
   private var deviceMonitorTask: Task<Void, Never>?
   private var iPhoneCameraManager: IPhoneCameraManager?
+
+  /// Non-nil in iPhone mode: lets the view draw an AVCaptureVideoPreviewLayer
+  /// off the live session instead of upscaling the converted frames.
+  var iPhoneCaptureSession: AVCaptureSession? { iPhoneCameraManager?.session }
 
   // CPU-based CIContext for rendering decoded pixel buffers in background
   private let cpuCIContext = CIContext(options: [.useSoftwareRenderer: true])

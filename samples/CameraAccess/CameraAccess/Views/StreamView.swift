@@ -36,6 +36,11 @@ struct StreamView: View {
           remoteVideoTrack: webrtcVM.remoteVideoTrack,
           hasRemoteVideo: webrtcVM.hasRemoteVideo
         )
+      } else if viewModel.streamingMode == .iPhone, let session = viewModel.iPhoneCaptureSession {
+        // Straight off the capture session: hardware-composited at sensor
+        // resolution, rather than a converted frame stretched to fit.
+        IPhoneCameraPreviewView(session: session)
+          .edgesIgnoringSafeArea(.all)
       } else if let videoFrame = viewModel.currentVideoFrame, viewModel.hasReceivedFirstFrame {
         GeometryReader { geometry in
           Image(uiImage: videoFrame)

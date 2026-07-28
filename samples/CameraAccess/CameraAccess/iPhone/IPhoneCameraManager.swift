@@ -8,6 +8,18 @@ class IPhoneCameraManager: NSObject {
   private let context = CIContext()
   private var isRunning = false
 
+  /// For AVCaptureVideoPreviewLayer. Drawing the preview from the session
+  /// directly is both sharper and cheaper than displaying the converted frames:
+  /// the layer composites in hardware at native resolution, while a UIImage of a
+  /// 480x360 buffer gets stretched about fivefold to fill the screen.
+  var session: AVCaptureSession { captureSession }
+
+  /// Only frames at least this far apart are converted. The conversion is a
+  /// CPU-side CIImage -> CGImage round trip and used to run on all ~30 fps even
+  /// though the model is sent one per second; the other 29 were discarded.
+  var minimumFrameInterval: TimeInterval = GeminiConfig.videoFrameInterval
+  private var lastConvertedFrame: Date = .distantPast
+
   var onFrameCaptured: ((UIImage) -> Void)?
 
   func start() {
@@ -29,7 +41,11 @@ class IPhoneCameraManager: NSObject {
 
   private func configureSession() {
     captureSession.beginConfiguration()
-    captureSession.sessionPreset = .medium
+    // 1920x1080 rather than .medium's 480x360. Affordable now that conversion is
+    // throttled: the preview layer costs nothing extra, and only one frame a
+    // second reaches the CPU path.
+    captureSession.sessionPreset =
+      captureSession.canSetSessionPreset(.hd1920x1080) ? .hd1920x1080 : .high
 
     // Add back camera input
     guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
@@ -86,6 +102,11 @@ extension IPhoneCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     didOutput sampleBuffer: CMSampleBuffer,
     from connection: AVCaptureConnection
   ) {
+    guard onFrameCaptured != nil else { return }
+    let now = Date()
+    guard now.timeIntervalSince(lastConvertedFrame) >= minimumFrameInterval else { return }
+    lastConvertedFrame = now
+
     guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
     let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
