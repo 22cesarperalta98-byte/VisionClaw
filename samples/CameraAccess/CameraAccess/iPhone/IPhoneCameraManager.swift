@@ -22,6 +22,39 @@ class IPhoneCameraManager: NSObject {
 
   var onFrameCaptured: ((UIImage) -> Void)?
 
+  // MARK: - Zoom
+
+  private var device: AVCaptureDevice?
+  /// Beyond roughly this the wide-angle sensor is just upscaling, which costs
+  /// detail rather than adding it -- the opposite of the point.
+  private let maxZoom: CGFloat = 8
+
+  private(set) var currentZoom: CGFloat = 1
+
+  var maxAvailableZoom: CGFloat {
+    guard let device else { return 1 }
+    return min(device.activeFormat.videoMaxZoomFactor, maxZoom)
+  }
+
+  /// Optical-then-digital zoom applied at the sensor, so it sharpens what is
+  /// captured rather than enlarging an already-encoded frame. Both the preview
+  /// and the frames sent to the model follow it, since both come off the same
+  /// session.
+  func setZoom(_ factor: CGFloat) {
+    guard let device else { return }
+    let clamped = min(max(factor, 1), maxAvailableZoom)
+    sessionQueue.async { [weak self] in
+      do {
+        try device.lockForConfiguration()
+        device.videoZoomFactor = clamped
+        device.unlockForConfiguration()
+        Task { @MainActor in self?.currentZoom = clamped }
+      } catch {
+        NSLog("[iPhoneCamera] Zoom failed: %@", error.localizedDescription)
+      }
+    }
+  }
+
   func start() {
     guard !isRunning else { return }
     sessionQueue.async { [weak self] in
@@ -54,6 +87,7 @@ class IPhoneCameraManager: NSObject {
       captureSession.commitConfiguration()
       return
     }
+    device = camera
 
     if captureSession.canAddInput(input) {
       captureSession.addInput(input)

@@ -84,6 +84,25 @@ class StreamSessionViewModel: ObservableObject {
   /// off the live session instead of upscaling the converted frames.
   var iPhoneCaptureSession: AVCaptureSession? { iPhoneCameraManager?.session }
 
+  /// Shown while pinching, and reset when the camera stops.
+  @Published var iPhoneZoom: CGFloat = 1
+  /// Zoom when the current pinch began; a magnification gesture reports scale
+  /// relative to its own start, not to the last committed value.
+  private var zoomAtGestureStart: CGFloat = 1
+
+  var maxIPhoneZoom: CGFloat { iPhoneCameraManager?.maxAvailableZoom ?? 1 }
+
+  func beginIPhoneZoomGesture() {
+    zoomAtGestureStart = iPhoneZoom
+  }
+
+  func updateIPhoneZoom(scale: CGFloat) {
+    guard let camera = iPhoneCameraManager else { return }
+    let target = min(max(zoomAtGestureStart * scale, 1), camera.maxAvailableZoom)
+    iPhoneZoom = target
+    camera.setZoom(target)
+  }
+
   // CPU-based CIContext for rendering decoded pixel buffers in background
   private let cpuCIContext = CIContext(options: [.useSoftwareRenderer: true])
   // VideoDecoder for decompressing HEVC/H.264 frames in background

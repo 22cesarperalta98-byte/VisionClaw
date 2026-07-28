@@ -41,6 +41,25 @@ struct StreamView: View {
         // resolution, rather than a converted frame stretched to fit.
         IPhoneCameraPreviewView(session: session)
           .edgesIgnoringSafeArea(.all)
+          .gesture(
+            MagnificationGesture()
+              .onChanged { scale in viewModel.updateIPhoneZoom(scale: scale) }
+              .onEnded { _ in viewModel.beginIPhoneZoomGesture() }
+          )
+          .onAppear { viewModel.beginIPhoneZoomGesture() }
+          .overlay(alignment: .topTrailing) {
+            // Only while zoomed: at 1x the label is noise on top of the scene.
+            if viewModel.iPhoneZoom > 1.05 {
+              Text(String(format: "%.1fx", viewModel.iPhoneZoom))
+                .font(.system(.footnote, design: .rounded).weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.45), in: Capsule())
+                .padding(.top, 60)
+                .padding(.trailing, 16)
+            }
+          }
       } else if let videoFrame = viewModel.currentVideoFrame, viewModel.hasReceivedFirstFrame {
         GeometryReader { geometry in
           Image(uiImage: videoFrame)
