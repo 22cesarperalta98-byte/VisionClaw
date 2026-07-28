@@ -11,7 +11,7 @@ class OpenClawEventClient {
   private let maxReconnectDelay: TimeInterval = 30
 
   func connect() {
-    guard GeminiConfig.isOpenClawConfigured else {
+    guard GeminiConfig.isAgentConfigured else {
       NSLog("[OpenClawWS] Not configured, skipping")
       return
     }
@@ -34,11 +34,12 @@ class OpenClawEventClient {
   // MARK: - Private
 
   private func establishConnection() {
-    let host = GeminiConfig.openClawHost
-      .replacingOccurrences(of: "http://", with: "")
-      .replacingOccurrences(of: "https://", with: "")
-    let port = GeminiConfig.openClawPort
-    guard let url = URL(string: "ws://\(host):\(port)") else {
+    // http -> ws, https -> wss; works for both the local gateway (host:port)
+    // and the cloud gateway (full URL, possibly behind TLS).
+    let wsBase = GeminiConfig.agentBaseURL
+      .replacingOccurrences(of: "https://", with: "wss://")
+      .replacingOccurrences(of: "http://", with: "ws://")
+    guard let url = URL(string: wsBase) else {
       NSLog("[OpenClawWS] Invalid URL")
       return
     }
@@ -138,7 +139,7 @@ class OpenClawEventClient {
         "commands": [] as [String],
         "permissions": [:] as [String: Any],
         "auth": [
-          "token": GeminiConfig.openClawGatewayToken
+          "token": GeminiConfig.agentToken
         ]
       ] as [String: Any]
     ]

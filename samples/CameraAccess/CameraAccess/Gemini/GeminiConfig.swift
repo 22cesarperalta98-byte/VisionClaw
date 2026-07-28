@@ -63,4 +63,33 @@ enum GeminiConfig {
       && !openClawGatewayToken.isEmpty
       && openClawHost != "http://YOUR_MAC_HOSTNAME.local"
   }
+
+  // MARK: - Action agent backend (self-hosted OpenClaw or cloud gateway)
+
+  static var agentBackend: AgentBackend { SettingsManager.shared.agentBackend }
+
+  /// Base URL of the active agent backend, scheme included.
+  static var agentBaseURL: String {
+    switch agentBackend {
+    case .selfHosted: return "\(openClawHost):\(openClawPort)"
+    case .cloud: return SettingsManager.shared.cloudGatewayURL
+    }
+  }
+
+  static var agentToken: String {
+    switch agentBackend {
+    case .selfHosted: return openClawGatewayToken
+    case .cloud: return SettingsManager.shared.cloudGatewayToken
+    }
+  }
+
+  static var isAgentConfigured: Bool {
+    switch agentBackend {
+    case .selfHosted:
+      return isOpenClawConfigured
+    case .cloud:
+      let url = SettingsManager.shared.cloudGatewayURL
+      return !url.isEmpty && url.hasPrefix("http") && !SettingsManager.shared.cloudGatewayToken.isEmpty
+    }
+  }
 }

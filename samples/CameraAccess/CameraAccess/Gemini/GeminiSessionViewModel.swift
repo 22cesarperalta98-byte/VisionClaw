@@ -177,6 +177,7 @@ class GeminiSessionViewModel: ObservableObject {
   }
 
   func stopSession() {
+    openClawBridge.flushSessionContext()
     eventClient.disconnect()
     toolCallRouter?.cancelAll()
     toolCallRouter = nil

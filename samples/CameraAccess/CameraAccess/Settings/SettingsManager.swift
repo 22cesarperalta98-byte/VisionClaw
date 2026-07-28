@@ -1,5 +1,12 @@
 import Foundation
 
+/// Which action-agent backend the app talks to. Both speak the same protocol;
+/// only the endpoint and token differ.
+enum AgentBackend: String, CaseIterable {
+  case selfHosted = "Self-hosted"
+  case cloud = "Cloud"
+}
+
 final class SettingsManager {
   static let shared = SettingsManager()
 
@@ -7,10 +14,13 @@ final class SettingsManager {
 
   private enum Key: String {
     case geminiAPIKey
+    case agentBackend
     case openClawHost
     case openClawPort
     case openClawHookToken
     case openClawGatewayToken
+    case cloudGatewayURL
+    case cloudGatewayToken
     case geminiSystemPrompt
     case webrtcSignalingURL
     case speakerOutputEnabled
@@ -57,6 +67,28 @@ final class SettingsManager {
     set { defaults.set(newValue, forKey: Key.openClawGatewayToken.rawValue) }
   }
 
+  // MARK: - Agent backend selection
+
+  var agentBackend: AgentBackend {
+    get {
+      guard let raw = defaults.string(forKey: Key.agentBackend.rawValue),
+            let backend = AgentBackend(rawValue: raw) else { return .selfHosted }
+      return backend
+    }
+    set { defaults.set(newValue.rawValue, forKey: Key.agentBackend.rawValue) }
+  }
+
+  /// Full base URL of the hosted gateway, scheme included (e.g. "https://gw.example.com" or "http://1.2.3.4:8788").
+  var cloudGatewayURL: String {
+    get { defaults.string(forKey: Key.cloudGatewayURL.rawValue) ?? "" }
+    set { defaults.set(newValue, forKey: Key.cloudGatewayURL.rawValue) }
+  }
+
+  var cloudGatewayToken: String {
+    get { defaults.string(forKey: Key.cloudGatewayToken.rawValue) ?? "" }
+    set { defaults.set(newValue, forKey: Key.cloudGatewayToken.rawValue) }
+  }
+
   // MARK: - WebRTC
 
   var webrtcSignalingURL: String {
@@ -88,9 +120,9 @@ final class SettingsManager {
   // MARK: - Reset
 
   func resetAll() {
-    for key in [Key.geminiAPIKey, .geminiSystemPrompt, .openClawHost, .openClawPort,
-                .openClawHookToken, .openClawGatewayToken, .webrtcSignalingURL,
-                .speakerOutputEnabled, .videoStreamingEnabled,
+    for key in [Key.geminiAPIKey, .geminiSystemPrompt, .agentBackend, .openClawHost, .openClawPort,
+                .openClawHookToken, .openClawGatewayToken, .cloudGatewayURL, .cloudGatewayToken,
+                .webrtcSignalingURL, .speakerOutputEnabled, .videoStreamingEnabled,
                 .proactiveNotificationsEnabled] {
       defaults.removeObject(forKey: key.rawValue)
     }

@@ -33,18 +33,18 @@ class OpenClawBridge: ObservableObject {
   }
 
   func checkConnection() async {
-    guard GeminiConfig.isOpenClawConfigured else {
+    guard GeminiConfig.isAgentConfigured else {
       connectionState = .notConfigured
       return
     }
     connectionState = .checking
-    guard let url = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/v1/chat/completions") else {
+    guard let url = URL(string: "\(GeminiConfig.agentBaseURL)/v1/chat/completions") else {
       connectionState = .unreachable("Invalid URL")
       return
     }
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
-    request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
     request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
     do {
       let (_, response) = try await pingSession.data(for: request)
@@ -73,7 +73,7 @@ class OpenClawBridge: ObservableObject {
   ) async -> ToolResult {
     lastToolCallStatus = .executing(toolName)
 
-    guard let url = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/v1/chat/completions") else {
+    guard let url = URL(string: "\(GeminiConfig.agentBaseURL)/v1/chat/completions") else {
       lastToolCallStatus = .failed(toolName, "Invalid URL")
       return .failure("Invalid gateway URL")
     }
@@ -88,7 +88,7 @@ class OpenClawBridge: ObservableObject {
 
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue(sessionKey, forHTTPHeaderField: "x-openclaw-session-key")
     request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
@@ -108,10 +108,10 @@ class OpenClawBridge: ObservableObject {
 
       guard let statusCode = httpResponse?.statusCode, (200...299).contains(statusCode) else {
         let code = httpResponse?.statusCode ?? 0
-        let bodyStr = String(data: data, encoding: .utf8) ?? "no body"
-        NSLog("[OpenClaw] Chat failed: HTTP %d - %@", code, String(bodyStr.prefix(200)))
-        lastToolCallStatus = .failed(toolName, "HTTP \(code)")
-        return .failure("Agent returned HTTP \(code)")
+        let detail = OpenClawBridge.errorMessage(from: data) ?? "HTTP \(code)"
+        NSLog("[OpenClaw] Chat failed: HTTP %d - %@", code, String(detail.prefix(200)))
+        lastToolCallStatus = .failed(toolName, detail)
+        return .failure("Agent error: \(detail)")
       }
 
       if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -136,5 +136,51 @@ class OpenClawBridge: ObservableObject {
       lastToolCallStatus = .failed(toolName, error.localizedDescription)
       return .failure("Agent error: \(error.localizedDescription)")
     }
+  }
+
+  // MARK: - Helpers
+
+  /// Extract a human-readable message from a JSON error body
+  /// (supports {"error": {"message": ...}} and {"error": "..."}).
+  static func errorMessage(from data: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    if let err = json["error"] as? [String: Any], let message = err["message"] as? String {
+      return message
+    }
+    if let message = json["error"] as? String {
+      return message
+    }
+    return nil
+  }
+
+  // MARK: - Session-end context handoff (cloud backend only)
+
+  /// When a voice session ends, hand the delegation history to the cloud agent
+  /// as background context so continuity survives across sessions. Fire-and-forget.
+  func flushSessionContext() {
+    guard GeminiConfig.agentBackend == .cloud, GeminiConfig.isAgentConfigured else { return }
+    let recent = conversationHistory.suffix(6)
+    guard !recent.isEmpty else { return }
+
+    let summary = recent
+      .map { "\($0["role"] ?? "?"): \($0["content"] ?? "")" }
+      .joined(separator: "\n")
+
+    guard let url = URL(string: "\(GeminiConfig.agentBaseURL)/context") else { return }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let body = ["context": "Voice session ended. Recent delegated exchanges:\n\(summary)"]
+    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+    let task = session.dataTask(with: request) { _, _, error in
+      if let error {
+        NSLog("[OpenClaw] Context flush failed: %@", error.localizedDescription)
+      } else {
+        NSLog("[OpenClaw] Session context flushed")
+      }
+    }
+    task.resume()
   }
 }

@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { initStore } from "./store.js";
 import { ensureUser } from "./provision.js";
 import { runTurn, injectContext } from "./turn.js";
+import { listTasks } from "./tasks.js";
 import { registerSocket, notifyUser } from "./notify.js";
 
 initStore(config.storePath);
@@ -73,6 +74,23 @@ app.post("/v1/chat/completions", async (req, res) => {
     });
   } catch (err) {
     console.error("[chat] turn failed:", err);
+    res.status(502).json({ error: { message: "agent backend error" } });
+  }
+});
+
+// Task history for the app's Recent Tasks view.
+app.get("/tasks", async (req, res) => {
+  const userId = userFromRequest(req.header("authorization"));
+  if (!userId) {
+    res.status(401).json({ error: { message: "invalid or missing gateway token" } });
+    return;
+  }
+  const limit = Math.min(Number(req.query.limit ?? 20) || 20, 100);
+  try {
+    const { sessionId } = await ensureUser(userId);
+    res.json({ tasks: await listTasks(sessionId, limit) });
+  } catch (err) {
+    console.error("[tasks] listing failed:", err);
     res.status(502).json({ error: { message: "agent backend error" } });
   }
 });

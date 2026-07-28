@@ -5,6 +5,9 @@ struct SettingsView: View {
   private let settings = SettingsManager.shared
 
   @State private var geminiAPIKey: String = ""
+  @State private var selectedBackend: AgentBackend = .selfHosted
+  @State private var cloudGatewayURL: String = ""
+  @State private var cloudGatewayToken: String = ""
   @State private var openClawHost: String = ""
   @State private var openClawPort: String = ""
   @State private var openClawHookToken: String = ""
@@ -37,6 +40,47 @@ struct SettingsView: View {
             .frame(minHeight: 200)
         }
 
+        Section(header: Text("Action Agent"), footer: Text(selectedBackend == .selfHosted
+          ? "Self-hosted: connect to an OpenClaw gateway running on your own machine."
+          : "Cloud: connect to a hosted VisionClaw gateway. No local install needed.")) {
+          Picker("Backend", selection: $selectedBackend) {
+            ForEach(AgentBackend.allCases, id: \.self) { backend in
+              Text(backend.rawValue).tag(backend)
+            }
+          }
+          .pickerStyle(.segmented)
+        }
+
+        if selectedBackend == .cloud {
+          Section(header: Text("Cloud Gateway")) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Gateway URL")
+                .font(.caption)
+                .foregroundColor(.secondary)
+              TextField("https://gateway.example.com", text: $cloudGatewayURL)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+                .keyboardType(.URL)
+                .font(.system(.body, design: .monospaced))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Access Token")
+                .font(.caption)
+                .foregroundColor(.secondary)
+              TextField("Your gateway access token", text: $cloudGatewayToken)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+                .font(.system(.body, design: .monospaced))
+            }
+
+            NavigationLink("Recent Tasks") {
+              RecentTasksView()
+            }
+          }
+        }
+
+        if selectedBackend == .selfHosted {
         Section(header: Text("OpenClaw"), footer: Text("Connect to an OpenClaw gateway running on your Mac for agentic tool-calling.")) {
           VStack(alignment: .leading, spacing: 4) {
             Text("Host")
@@ -77,6 +121,7 @@ struct SettingsView: View {
               .disableAutocorrection(true)
               .font(.system(.body, design: .monospaced))
           }
+        }
         }
 
         Section(header: Text("WebRTC")) {
@@ -145,6 +190,9 @@ struct SettingsView: View {
   private func loadCurrentValues() {
     geminiAPIKey = settings.geminiAPIKey
     geminiSystemPrompt = settings.geminiSystemPrompt
+    selectedBackend = settings.agentBackend
+    cloudGatewayURL = settings.cloudGatewayURL
+    cloudGatewayToken = settings.cloudGatewayToken
     openClawHost = settings.openClawHost
     openClawPort = String(settings.openClawPort)
     openClawHookToken = settings.openClawHookToken
@@ -158,6 +206,9 @@ struct SettingsView: View {
   private func save() {
     settings.geminiAPIKey = geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.geminiSystemPrompt = geminiSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    settings.agentBackend = selectedBackend
+    settings.cloudGatewayURL = cloudGatewayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    settings.cloudGatewayToken = cloudGatewayToken.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.openClawHost = openClawHost.trimmingCharacters(in: .whitespacesAndNewlines)
     if let port = Int(openClawPort.trimmingCharacters(in: .whitespacesAndNewlines)) {
       settings.openClawPort = port
