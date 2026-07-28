@@ -1,6 +1,7 @@
 import { anthropic } from "./cma.js";
 import { config } from "./config.js";
 import { loadStore, saveStore, userResources, type UserResources } from "./store.js";
+import { APPS } from "./apps.js";
 
 const AGENT_SYSTEM_PROMPT = `You are the action agent behind a voice assistant that runs on smart glasses and phones.
 The user talks to a real-time voice layer; that layer delegates tasks to you and speaks your replies aloud.
@@ -10,6 +11,9 @@ Ground rules:
 - Lead with the answer in one or two sentences. Add detail only when the task genuinely needs it.
 - You have a mounted memory directory about the owner. Check it before tasks that depend on their preferences,
   people, or ongoing threads, and append new durable facts as you learn them. Never store secrets there.
+- Connected apps (calendar and similar) appear as tools when the owner has linked them. If a tool reports that
+  authorization is required, do not retry it and never read a URL aloud: say in one sentence that the app needs to be
+  connected in the app's settings, and carry on with what you can do.
 - For multi-step work, start immediately and keep intermediate narration to a single short sentence.
 - If a task cannot be completed, say what you tried and what is missing, in one sentence.`;
 
@@ -29,7 +33,18 @@ export async function ensureShared(): Promise<{ agentId: string; environmentId: 
       name: "VisionClaw Action Agent",
       model: { id: config.agentModel, effort: config.agentEffort },
       system: AGENT_SYSTEM_PROMPT,
-      tools: [{ type: "agent_toolset_20260401" }],
+      mcp_servers: Object.values(APPS).map((a) => ({
+        type: "url" as const,
+        name: a.id,
+        url: a.mcpUrl,
+      })),
+      tools: [
+        { type: "agent_toolset_20260401" as const },
+        ...Object.values(APPS).map((a) => ({
+          type: "mcp_toolset" as const,
+          mcp_server_name: a.id,
+        })),
+      ],
     });
     store.shared.agentId = agent.id;
     store.shared.agentVersion = agent.version;

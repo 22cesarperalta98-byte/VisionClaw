@@ -49,6 +49,8 @@ is an alternative backend, not a replacement.
 | `POST /v1/chat/completions` | one agent turn. Sends only the newest user message — the managed session owns durable history (server-side compaction included). With `"stream": true`, responds with OpenAI-style SSE chunks generated live from the agent's output |
 | `POST /context` | queue voice-session context (`{"context": "..."}`); it attaches to the user's next turn as a system-level event (the API rejects standalone system messages) |
 | `GET /tasks?limit=N` | recent delegated tasks + results, for the app's Recent Tasks view |
+| `GET /apps` | connectable apps and whether this user has linked each one |
+| `GET /connect/:app?token=…` | starts the OAuth flow (open in an in-app auth sheet); the callback stores an `mcp_oauth` credential in the user's vault |
 | `ws://host:port` | event channel; same protocol-v3 handshake as the local gateway. Late task results arrive as `heartbeat` events, scheduled-task summaries as `cron` events |
 
 ## Two-speed turns
@@ -60,12 +62,36 @@ layer never blocks on a long task. The same budget applies to streaming
 requests: past it, the stream closes with an acknowledgement chunk and the
 final text arrives as a proactive event.
 
+## Connecting apps
+
+Extensions are MCP servers declared once on the shared agent config, with
+per-user OAuth credentials in that user's vault (Anthropic refreshes the
+tokens). Adding one means a new entry in `src/apps.ts` — the connect routes,
+the vault write, and the `/apps` listing are generic.
+
+Google Calendar ships as the first extension. To enable it:
+
+1. Create a Google Cloud project; enable **Google Calendar API** and
+   **Google Calendar MCP API**.
+2. Configure the OAuth consent screen and set publishing status to **In
+   production** — in *Testing* status Google expires refresh tokens after 7
+   days, which silently breaks stored credentials.
+3. Create a Web application OAuth client with redirect URI
+   `<PUBLIC_BASE_URL>/connect/gcal/callback`; put the id/secret in `.env`.
+4. Unverified apps are capped at 100 users and show a warning screen; submit
+   for sensitive-scope verification to lift both.
+
+On-device alternative: the iOS app also exposes calendar and reminder tools
+backed by EventKit, which need no OAuth at all. Those cover interactive asks;
+the connected app is what lets background and scheduled tasks reach the
+calendar when the phone is asleep.
+
 ## Notes and roadmap
 
 - Managed Agents is an Anthropic **beta**; quotas apply (notably scheduled
   deployments are capped per organization).
 - Memory is a per-user mounted store of small text files, versioned and
   redactable server-side.
-- Roadmap: connected-app OAuth flows storing credentials into per-user vaults,
-  scheduled reminders via deployments, tool-permission prompts surfaced as
-  spoken confirmations, Android parity for the backend switcher.
+- Roadmap: more connectable apps (Gmail, Notion, Linear), scheduled reminders
+  via deployments, tool-permission prompts surfaced as spoken confirmations,
+  Android parity for the backend switcher and local tools.

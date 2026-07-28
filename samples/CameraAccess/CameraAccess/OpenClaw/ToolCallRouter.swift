@@ -23,6 +23,19 @@ class ToolCallRouter {
     NSLog("[ToolCall] Received: %@ (id: %@) args: %@",
           callName, callId, String(describing: call.args))
 
+    // On-device tools run locally: no backend, no circuit breaker, no network.
+    if LocalCalendarTools.toolNames.contains(callName) {
+      let task = Task { @MainActor in
+        let result = await LocalCalendarTools.shared.handle(name: callName, args: call.args)
+        guard !Task.isCancelled else { return }
+        NSLog("[ToolCall] Local result for %@: %@", callName, String(describing: result))
+        sendResponse(self.buildToolResponse(callId: callId, name: callName, result: result))
+        self.inFlightTasks.removeValue(forKey: callId)
+      }
+      inFlightTasks[callId] = task
+      return
+    }
+
     // Circuit breaker: stop sending tool calls after repeated failures
     if consecutiveFailures >= maxConsecutiveFailures {
       NSLog("[ToolCall] Circuit breaker open (%d consecutive failures), rejecting %@",

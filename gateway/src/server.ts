@@ -8,6 +8,7 @@ import { ensureUser } from "./provision.js";
 import { runTurn, runTurnStreaming, queueContext, drainContext } from "./turn.js";
 import { listTasks } from "./tasks.js";
 import { registerSocket, notifyUser } from "./notify.js";
+import { registerConnectRoutes } from "./connect.js";
 
 initStore(config.storePath);
 
@@ -20,6 +21,10 @@ function userFromRequest(header: string | undefined): string | null {
   if (!header?.startsWith("Bearer ")) return null;
   return config.tokens.get(header.slice("Bearer ".length).trim()) ?? null;
 }
+
+// ---------- app connections (OAuth -> vault) ----------
+
+registerConnectRoutes(app, userFromRequest);
 
 // ---------- HTTP: the app's existing protocol ----------
 

@@ -71,6 +71,10 @@
 	<string>This app uses the microphone to have voice conversations with the AI assistant while streaming from your glasses.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>This app needs access to save photos captured from your glasses.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>This app reads and adds calendar events so the assistant can answer questions about your schedule and create events when you ask.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>This app creates reminders when you ask the assistant to remind you about something.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
