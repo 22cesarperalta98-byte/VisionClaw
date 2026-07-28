@@ -27,7 +27,9 @@ primary_region = 'sjc'
   AGENT_MODEL = 'claude-opus-5'
   AGENT_EFFORT = 'medium'
   QUICK_ANSWER_TIMEOUT_MS = '45000'
-  GOOGLE_CLIENT_ID = '204487489107-3h1ia24cnu3vsk3kucicjn2futv450p7.apps.googleusercontent.com'
+  # GOOGLE_CLIENT_ID is set with `fly secrets set` rather than living here, so a
+  # fork brings its own OAuth client instead of pointing at someone else's
+  # consent screen and unverified-user quota.
 
 [http_service]
   internal_port = 8788
