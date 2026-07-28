@@ -91,8 +91,34 @@ enum ToolDeclarations {
   /// `listCalendarEvents` / `createCalendarEvent` stay defined for the
   /// on-device path; add them back here to switch EventKit back on.
   static func allDeclarations() -> [[String: Any]] {
-    return [execute, createReminder]
+    return [execute, lookCloselyDeclaration, createReminder]
   }
+
+  /// The ambient stream is one downscaled, compressed frame per second -- enough
+  /// to know a receipt is being held up, not enough to read its line items. This
+  /// asks for a full-resolution still instead. The image arrives as a new frame
+  /// rather than as this tool's return value, because Live function responses
+  /// carry text only.
+  static let lookCloselyDeclaration: [String: Any] = [
+    "name": "look_closely",
+    "description": "Capture a sharp, full-resolution photo of what the user is looking at right now. "
+      + "Use this whenever the answer depends on fine visual detail the live view is too coarse for: "
+      + "reading text, receipts, labels, screens, handwriting, serial numbers, small print, or "
+      + "distinguishing similar objects. Also use it when you can tell something is there but cannot "
+      + "read it. After it returns, a high-resolution image arrives in your view -- answer from that, "
+      + "not from the blurry live frames.",
+    "parameters": [
+      "type": "object",
+      "properties": [
+        "looking_for": [
+          "type": "string",
+          "description": "What detail you are trying to read or identify, e.g. 'the total on the receipt'."
+        ]
+      ],
+      "required": [] as [String]
+    ] as [String: Any],
+    "behavior": "BLOCKING"
+  ]
 
   static let execute: [String: Any] = [
     "name": "execute",

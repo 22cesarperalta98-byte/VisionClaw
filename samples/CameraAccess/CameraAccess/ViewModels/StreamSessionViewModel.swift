@@ -42,7 +42,7 @@ class StreamSessionViewModel: ObservableObject {
   @Published var errorMessage: String = ""
   @Published var hasActiveDevice: Bool = false
   @Published var streamingMode: StreamingMode = .glasses
-  @Published var selectedResolution: StreamingResolution = .low
+  @Published var selectedResolution: StreamingResolution = .high
 
   var isStreaming: Bool {
     streamingStatus != .stopped
@@ -90,9 +90,13 @@ class StreamSessionViewModel: ObservableObject {
     self.wearables = wearables
     // Let the SDK auto-select from available devices
     self.deviceSelector = AutoDeviceSelector(wearables: wearables)
+    // 720x1280 rather than 360x640. At the low tier, printed text is a few
+    // pixels tall before JPEG compression halves it again -- the model could
+    // read a receipt's header and total but nothing smaller. Must match
+    // `selectedResolution` below; the two are set independently.
     let config = StreamSessionConfig(
       videoCodec: VideoCodec.raw,
-      resolution: StreamingResolution.low,
+      resolution: StreamingResolution.high,
       frameRate: 24)
     streamSession = StreamSession(streamSessionConfig: config, deviceSelector: deviceSelector)
 
@@ -229,10 +233,16 @@ class StreamSessionViewModel: ObservableObject {
     photoDataListenerToken = streamSession.photoDataPublisher.listen { [weak self] photoData in
       Task { @MainActor [weak self] in
         guard let self else { return }
-        if let uiImage = UIImage(data: photoData.data) {
-          self.capturedPhoto = uiImage
-          self.showPhotoPreview = true
+        guard let uiImage = UIImage(data: photoData.data) else { return }
+        // An agent-initiated capture is answering a question, not something the
+        // user asked to see -- deliver it and stay out of the way.
+        if let waiting = self.pendingStillContinuation {
+          self.pendingStillContinuation = nil
+          waiting.resume(returning: uiImage)
+          return
         }
+        self.capturedPhoto = uiImage
+        self.showPhotoPreview = true
       }
     }
   }
@@ -321,6 +331,32 @@ class StreamSessionViewModel: ObservableObject {
 
   func capturePhoto() {
     streamSession.capturePhoto(format: .jpeg)
+  }
+
+  private var pendingStillContinuation: CheckedContinuation<UIImage?, Never>?
+
+  /// Full-resolution still for the model to read, rather than a downscaled
+  /// stream frame. Returns nil if the capture fails or the glasses never answer;
+  /// a hung continuation would leave a tool call outstanding forever.
+  func captureStillForAgent(timeout: TimeInterval = 6) async -> UIImage? {
+    if pendingStillContinuation != nil { return nil }
+
+    let image = await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+      pendingStillContinuation = cont
+      guard streamSession.capturePhoto(format: .jpeg) else {
+        pendingStillContinuation = nil
+        cont.resume(returning: nil)
+        return
+      }
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+        if let stale = self.pendingStillContinuation {
+          self.pendingStillContinuation = nil
+          stale.resume(returning: nil)
+        }
+      }
+    }
+    return image
   }
 
   func dismissPhotoPreview() {

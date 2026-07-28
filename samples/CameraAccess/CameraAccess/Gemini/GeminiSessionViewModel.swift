@@ -14,6 +14,7 @@ class GeminiSessionViewModel: ObservableObject {
   private let geminiService = GeminiLiveService()
   private let openClawBridge = OpenClawBridge()
   private var toolCallRouter: ToolCallRouter?
+  private var cameraStillProvider: (() async -> UIImage?)?
   private let audioManager = AudioManager()
   private let eventClient = OpenClawEventClient()
   private var lastVideoFrameTime: Date = .distantPast
@@ -90,6 +91,7 @@ class GeminiSessionViewModel: ObservableObject {
 
     // Wire tool call handling
     toolCallRouter = ToolCallRouter(bridge: openClawBridge)
+    wireCameraIntoRouter()
 
     geminiService.onToolCall = { [weak self] toolCall in
       guard let self else { return }
@@ -191,6 +193,25 @@ class GeminiSessionViewModel: ObservableObject {
     userTranscript = ""
     aiTranscript = ""
     toolCallStatus = .idle
+  }
+
+  /// Let look_closely reach the camera. Called by whoever owns both view models;
+  /// until it is, the tool reports that no camera is available rather than hanging.
+  /// Held on the view model, not written straight to the router: the router is
+  /// built in startSession() and discarded on stop, while this is called once
+  /// when the view appears. Assigning directly would land on a nil router and
+  /// silently do nothing.
+  func attachCamera(captureStill: @escaping () async -> UIImage?) {
+    cameraStillProvider = captureStill
+    wireCameraIntoRouter()
+  }
+
+  private func wireCameraIntoRouter() {
+    guard let router = toolCallRouter, let provider = cameraStillProvider else { return }
+    router.captureStill = provider
+    router.sendStill = { [weak self] image in
+      self?.geminiService.sendVideoFrame(image: image, quality: GeminiConfig.stillJPEGQuality)
+    }
   }
 
   func sendVideoFrameIfThrottled(image: UIImage) {

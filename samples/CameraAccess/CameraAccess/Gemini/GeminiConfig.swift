@@ -10,7 +10,13 @@ enum GeminiConfig {
   static let audioBitsPerSample: UInt32 = 16
 
   static let videoFrameInterval: TimeInterval = 1.0
-  static let videoJPEGQuality: CGFloat = 0.5
+  // Ambient frames stay cheap; they exist to tell the model roughly what is in
+  // front of the user, once a second.
+  static let videoJPEGQuality: CGFloat = 0.6
+  /// Quality for a deliberate still. Thin glyphs are exactly what JPEG discards
+  /// first, so anything meant to be *read* is encoded near-lossless -- one frame
+  /// at 0.95 costs less than a second of ambient streaming.
+  static let stillJPEGQuality: CGFloat = 0.95
 
   static var systemInstruction: String { SettingsManager.shared.geminiSystemPrompt }
 
