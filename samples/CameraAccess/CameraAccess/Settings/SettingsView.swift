@@ -74,6 +74,10 @@ struct SettingsView: View {
                 .font(.system(.body, design: .monospaced))
             }
 
+            NavigationLink("Connected Apps") {
+              ConnectedAppsView()
+            }
+
             NavigationLink("Recent Tasks") {
               RecentTasksView()
             }

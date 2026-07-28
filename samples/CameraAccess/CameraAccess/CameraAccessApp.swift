@@ -25,50 +25,93 @@ import MWDATMockDevice
 
 @main
 struct CameraAccessApp: App {
-  #if canImport(MWDATMockDevice)
-  // Debug menu for simulating device connections during development
-  @StateObject private var debugMenuViewModel = DebugMenuViewModel(mockDeviceKit: MockDeviceKit.shared)
-  #endif
-  private let wearables: WearablesInterface
-  @StateObject private var wearablesViewModel: WearablesViewModel
+  /// nil when the Wearables SDK could not start (no hardware, e.g. the
+  /// simulator). Accessing `Wearables.shared` after a failed `configure()`
+  /// traps, so nothing glasses-related may be built in that case.
+  private let wearables: WearablesInterface?
 
   init() {
+    var available: WearablesInterface?
     do {
       try Wearables.configure()
+      available = Wearables.shared
     } catch {
-      #if DEBUG
-      NSLog("[CameraAccess] Failed to configure Wearables SDK: \(error)")
-      #endif
+      NSLog("[CameraAccess] Wearables SDK unavailable: \(error)")
     }
-    let wearables = Wearables.shared
-    self.wearables = wearables
-    self._wearablesViewModel = StateObject(wrappedValue: WearablesViewModel(wearables: wearables))
+    self.wearables = available
   }
 
   var body: some Scene {
     WindowGroup {
-      // Main app view with access to the shared Wearables SDK instance
-      // The Wearables.shared singleton provides the core DAT API
-      MainAppView(wearables: Wearables.shared, viewModel: wearablesViewModel)
-        // Show error alerts for view model failures
-        .alert("Error", isPresented: $wearablesViewModel.showError) {
-          Button("OK") {
-            wearablesViewModel.dismissError()
-          }
-        } message: {
-          Text(wearablesViewModel.errorMessage)
-        }
-        #if canImport(MWDATMockDevice)
+      if let wearables {
+        WearablesRootView(wearables: wearables)
+      } else {
+        // Keep the app usable for settings and cloud-agent work instead of
+        // crashing, so UI can be developed without a headset.
+        NoWearablesView()
+      }
+    }
+  }
+}
+
+/// The normal app: everything that needs the glasses SDK.
+private struct WearablesRootView: View {
+  let wearables: WearablesInterface
+  @StateObject private var viewModel: WearablesViewModel
+
+  #if canImport(MWDATMockDevice)
+  // Debug menu for simulating device connections during development
+  @StateObject private var debugMenuViewModel = DebugMenuViewModel(mockDeviceKit: MockDeviceKit.shared)
+  #endif
+
+  init(wearables: WearablesInterface) {
+    self.wearables = wearables
+    self._viewModel = StateObject(wrappedValue: WearablesViewModel(wearables: wearables))
+  }
+
+  var body: some View {
+    // Main app view with access to the shared Wearables SDK instance
+    MainAppView(wearables: wearables, viewModel: viewModel)
+      // Show error alerts for view model failures
+      .alert("Error", isPresented: $viewModel.showError) {
+        Button("OK") { viewModel.dismissError() }
+      } message: {
+        Text(viewModel.errorMessage)
+      }
+      #if canImport(MWDATMockDevice)
       .sheet(isPresented: $debugMenuViewModel.showDebugMenu) {
         MockDeviceKitView(viewModel: debugMenuViewModel.mockDeviceKitViewModel)
       }
       .overlay {
         DebugMenuView(debugMenuViewModel: debugMenuViewModel)
       }
-        #endif
+      #endif
 
-      // Registration view handles the flow for connecting to the glasses via Meta AI
-      RegistrationView(viewModel: wearablesViewModel)
+    // Registration view handles the flow for connecting to the glasses via Meta AI
+    RegistrationView(viewModel: viewModel)
+  }
+}
+
+/// Shown when the Wearables SDK is unavailable. Everything that does not need
+/// glasses -- backend selection, connected apps, task history -- still works.
+private struct NoWearablesView: View {
+  @State private var showSettings = false
+
+  var body: some View {
+    VStack(spacing: 16) {
+      Image(systemName: "eyeglasses")
+        .font(.system(size: 48))
+        .foregroundStyle(.secondary)
+      Text("Glasses unavailable")
+        .font(.headline)
+      Text("The Meta Wearables SDK could not start on this device, so streaming is disabled. Settings and cloud agent features still work.")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 32)
+      Button("Open Settings") { showSettings = true }
+        .buttonStyle(.borderedProminent)
     }
+    .sheet(isPresented: $showSettings) { SettingsView() }
   }
 }

@@ -17,31 +17,42 @@ function stateSecret(): string {
   return process.env.STATE_SECRET ?? "dev-only-insecure-state-secret";
 }
 
-function signState(userId: string, appId: string): string {
-  const payload = `${userId}:${appId}:${Date.now()}:${randomBytes(8).toString("hex")}`;
-  const mac = createHmac("sha256", stateSecret()).update(payload).digest("hex").slice(0, 32);
-  return Buffer.from(`${payload}:${mac}`).toString("base64url");
+interface StatePayload {
+  userId: string;
+  appId: string;
+  /** Custom URL scheme to bounce back to when the flow finishes (in-app auth sheet). */
+  scheme?: string;
+  ts: number;
+  nonce: string;
 }
 
-function verifyState(state: string): { userId: string; appId: string } | null {
-  let decoded: string;
-  try {
-    decoded = Buffer.from(state, "base64url").toString("utf8");
-  } catch {
-    return null;
-  }
-  const parts = decoded.split(":");
-  if (parts.length !== 5) return null;
-  const [userId, appId, issuedAt, nonce, mac] = parts;
-  const expected = createHmac("sha256", stateSecret())
-    .update(`${userId}:${appId}:${issuedAt}:${nonce}`)
-    .digest("hex")
-    .slice(0, 32);
+function signState(userId: string, appId: string, scheme?: string): string {
+  const payload: StatePayload = {
+    userId,
+    appId,
+    scheme,
+    ts: Date.now(),
+    nonce: randomBytes(8).toString("hex"),
+  };
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const mac = createHmac("sha256", stateSecret()).update(body).digest("hex").slice(0, 32);
+  return `${body}.${mac}`;
+}
+
+function verifyState(state: string): StatePayload | null {
+  const [body, mac] = state.split(".");
+  if (!body || !mac) return null;
+  const expected = createHmac("sha256", stateSecret()).update(body).digest("hex").slice(0, 32);
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  if (Date.now() - Number(issuedAt) > STATE_TTL_MS) return null;
-  return { userId, appId };
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as StatePayload;
+    if (Date.now() - payload.ts > STATE_TTL_MS) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 function redirectUri(req: Request, appId: string): string {
@@ -161,7 +172,7 @@ export function registerConnectRoutes(
       redirect_uri: redirectUri(req, appDef.id),
       response_type: "code",
       scope: appDef.scopes.join(" "),
-      state: signState(userId, appDef.id),
+      state: signState(userId, appDef.id, String(req.query.scheme ?? "") || undefined),
       ...(appDef.authorizeParams ?? {}),
     });
     res.redirect(`${appDef.authorizeUrl}?${params.toString()}`);
@@ -318,17 +329,30 @@ export function registerConnectRoutes(
       if (health.ok) {
         console.log(`[connect] ${appDef.displayName} connected and working for ${verified.userId}`);
         notifyUser(verified.userId, `${appDef.displayName} is connected.`);
-        res.send(page(`${appDef.displayName} connected`, "You can close this window and keep talking."));
       } else {
         console.warn(`[connect] ${appDef.id} signed in but unusable for ${verified.userId}:`, health.detail);
-        res.send(
-          page(
-            "Signed in, but not usable yet",
-            `Your account was linked, but ${appDef.displayName} refused the first request (${health.detail}). ` +
-              "The credential is saved, so it will start working as soon as access is granted.",
-          ),
-        );
       }
+
+      // Started from an in-app auth sheet: bounce back so the sheet closes
+      // itself and the app can refresh, instead of stranding a web page.
+      if (verified.scheme) {
+        const back = new URL(`${verified.scheme}://connect-callback`);
+        back.searchParams.set("app", appDef.id);
+        back.searchParams.set("ok", health.ok ? "1" : "0");
+        if (!health.ok) back.searchParams.set("detail", health.detail);
+        res.redirect(back.toString());
+        return;
+      }
+
+      res.send(
+        health.ok
+          ? page(`${appDef.displayName} connected`, "You can close this window and keep talking.")
+          : page(
+              "Signed in, but not usable yet",
+              `Your account was linked, but ${appDef.displayName} refused the first request (${health.detail}). ` +
+                "The credential is saved, so it will start working as soon as access is granted.",
+            ),
+      );
     } catch (err) {
       console.error("[connect] callback failed:", err);
       res.status(502).send(page("Could not connect", "Something went wrong. Please try again."));
