@@ -84,13 +84,19 @@ enum ToolCallStatus: Equatable {
 
 enum ToolDeclarations {
 
+  /// Google Calendar is the source of truth, so calendar reads and writes go
+  /// through `execute` to the agent rather than to EventKit -- a scheduled run
+  /// has no phone in the loop, and splitting reads from writes across two
+  /// calendars means an event you create is invisible to the next question.
+  /// `listCalendarEvents` / `createCalendarEvent` stay defined for the
+  /// on-device path; add them back here to switch EventKit back on.
   static func allDeclarations() -> [[String: Any]] {
-    return [execute, listCalendarEvents, createCalendarEvent, createReminder]
+    return [execute, createReminder]
   }
 
   static let execute: [String: Any] = [
     "name": "execute",
-    "description": "Your only way to take action. You have no memory, storage, or ability to do anything on your own -- use this tool for everything: sending messages, searching the web, adding to lists, setting reminders, creating notes, research, drafts, scheduling, smart home control, app interactions, or any request that goes beyond answering a question. When in doubt, use this tool.",
+    "description": "Your only way to take action or to look anything up. You have no memory, storage, calendar, or ability to do anything on your own -- use this tool for everything: reading and changing the user's Google Calendar (what's on it, am I free, schedule this, move that), sending messages, searching the web, adding to lists, creating notes, research, drafts, smart home control, app interactions, or any request needing current information. Answering a calendar question still requires this tool -- you cannot see the calendar yourself. When in doubt, use this tool.",
     "parameters": [
       "type": "object",
       "properties": [

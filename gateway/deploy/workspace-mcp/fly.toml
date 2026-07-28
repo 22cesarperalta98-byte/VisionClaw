@@ -29,7 +29,7 @@ primary_region = 'sjc'
   # Memory-only credential storage: nothing to persist, safe to scale to zero.
   WORKSPACE_MCP_STATELESS_MODE = 'true'
   WORKSPACE_MCP_PORT = '8000'
-  WORKSPACE_EXTERNAL_URL = 'https://visionclaw-workspace-mcp.fly.dev'
+  WORKSPACE_EXTERNAL_URL = 'https://mcp.visionagents.app'
   # Only the calendar tools are loaded; widen this (gmail, tasks, drive, ...)
   # as you add registry entries with matching scopes.
   TOOLS = 'calendar'

@@ -89,9 +89,11 @@ export const APPS: Record<string, ConnectableApp> = {
       // so identity scopes are required alongside the data scope.
       "openid",
       "https://www.googleapis.com/auth/userinfo.email",
-      // Read-only keeps writes on-device via EventKit. Swap for
-      // .../auth/calendar.events to let the background agent create events.
+      // Google Calendar is the source of truth for events, so the agent needs
+      // to write as well as read -- scheduled runs have no phone to fall back
+      // on. This pair covers event CRUD without granting calendar management.
       "https://www.googleapis.com/auth/calendar.readonly",
+      "https://www.googleapis.com/auth/calendar.events",
     ],
     authorizeParams: GOOGLE_AUTHORIZE_PARAMS,
     clientIdEnv: "GOOGLE_CLIENT_ID",
