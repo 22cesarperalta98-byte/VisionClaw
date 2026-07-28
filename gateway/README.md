@@ -67,9 +67,48 @@ final text arrives as a proactive event.
 Extensions are MCP servers declared once on the shared agent config, with
 per-user OAuth credentials in that user's vault (Anthropic refreshes the
 tokens). Adding one means a new entry in `src/apps.ts` — the connect routes,
-the vault write, and the `/apps` listing are generic.
+the vault write, and the `/apps` listing are generic. Entries are offered only
+when enabled and their MCP URL resolves, so a self-hosted app stays hidden
+until it is deployed.
 
-Google Calendar ships as the first extension. To enable it:
+After the OAuth callback the gateway makes one real `tools/call` against the
+server before reporting success: a valid grant does not guarantee the server
+will serve that account, and "connected" should not claim otherwise.
+
+### Google Calendar
+
+Google's own Calendar MCP server (`calendarmcp.googleapis.com`) is **disabled in
+the registry**. It ships under the Google Workspace Developer Preview Program:
+with a personal Gmail account `initialize` and `tools/list` succeed but every
+`tools/call` returns "The caller does not have permission" — verified with a
+direct token call, while the same token works fine against the Calendar REST
+API. It needs a Workspace account plus preview enrollment, so it cannot serve
+consumer users.
+
+Instead, run [`taylorwilsdon/google_workspace_mcp`](https://github.com/taylorwilsdon/google_workspace_mcp)
+(MIT) in external-OAuth mode, where it accepts the bearer token the vault
+injects rather than running its own OAuth flow, and calls the Google REST APIs
+underneath — which works with consumer accounts:
+
+```bash
+docker run -p 8000:8000 \
+  -e MCP_ENABLE_OAUTH21=true \
+  -e EXTERNAL_OAUTH21_PROVIDER=true \
+  -e GOOGLE_OAUTH_CLIENT_ID="<same client id the gateway uses>" \
+  -e WORKSPACE_MCP_TOOLS="calendar" \
+  workspace-mcp --transport streamable-http --read-only
+```
+
+Then point the gateway at it — the app stays hidden until this is set:
+
+```
+WORKSPACE_MCP_URL=https://your-workspace-mcp.example.com/mcp/
+```
+
+The same deployment also serves Gmail, Tasks, Drive and more: widen
+`WORKSPACE_MCP_TOOLS` and add a registry entry with the matching scopes.
+
+To set up the Google side:
 
 1. Create a Google Cloud project; enable **Google Calendar API** and
    **Google Calendar MCP API**.
@@ -77,7 +116,7 @@ Google Calendar ships as the first extension. To enable it:
    production** — in *Testing* status Google expires refresh tokens after 7
    days, which silently breaks stored credentials.
 3. Create a Web application OAuth client with redirect URI
-   `<PUBLIC_BASE_URL>/connect/gcal/callback`; put the id/secret in `.env`.
+   `<PUBLIC_BASE_URL>/connect/gcal-self/callback`; put the id/secret in `.env`.
 4. Unverified apps are capped at 100 users and show a warning screen; submit
    for sensitive-scope verification to lift both.
 

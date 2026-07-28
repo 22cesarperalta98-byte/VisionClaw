@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { anthropic } from "./cma.js";
-import { appCredentials, getApp, APPS } from "./apps.js";
+import { activeApps, appCredentials, getApp } from "./apps.js";
 import { ensureUser } from "./provision.js";
 import { notifyUser } from "./notify.js";
 
@@ -56,6 +56,54 @@ h1{font-size:20px;margin:0 0 8px}p{color:#666;margin:0;max-width:28em}</style>
 <h1>${title}</h1><p>${body}</p>`;
 }
 
+/**
+ * Call one real tool on the MCP server with the user's token. `initialize` and
+ * `tools/list` can succeed on servers that then refuse every data call, so the
+ * only meaningful health check is an actual `tools/call`.
+ */
+async function probeMcp(mcpUrl: string, accessToken: string): Promise<{ ok: boolean; detail: string }> {
+  const rpc = async (body: object) => {
+    const r = await fetch(mcpUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify(body),
+    });
+    return { status: r.status, text: await r.text() };
+  };
+
+  try {
+    const listed = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    if (listed.status !== 200) return { ok: false, detail: `tools/list HTTP ${listed.status}` };
+
+    const names = [...listed.text.matchAll(/"name"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+    const probeName =
+      names.find((n) => /^list_calendars$/.test(n)) ??
+      names.find((n) => /^list_/.test(n)) ??
+      names[0];
+    if (!probeName) return { ok: false, detail: "server exposed no tools" };
+
+    const called = await rpc({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: probeName, arguments: {} },
+    });
+    if (called.status !== 200) return { ok: false, detail: `tools/call HTTP ${called.status}` };
+    // JSON-RPC reports tool failures inside a 200 body.
+    if (/"isError"\s*:\s*true/.test(called.text)) {
+      const msg = called.text.match(/"text"\s*:\s*"([^"]{0,120})"/)?.[1] ?? "tool call rejected";
+      return { ok: false, detail: msg };
+    }
+    return { ok: true, detail: `${probeName} ok` };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : "probe failed" };
+  }
+}
+
 export function registerConnectRoutes(
   app: Express,
   userFromRequest: (header: string | undefined) => string | null,
@@ -75,7 +123,7 @@ export function registerConnectRoutes(
         if (url) connected.add(url);
       }
       res.json({
-        apps: Object.values(APPS).map((a) => ({
+        apps: activeApps().map((a) => ({
           id: a.id,
           displayName: a.displayName,
           connected: connected.has(a.mcpUrl),
@@ -264,9 +312,23 @@ export function registerConnectRoutes(
         );
       }
 
-      console.log(`[connect] ${appDef.displayName} connected for ${verified.userId}`);
-      notifyUser(verified.userId, `${appDef.displayName} is connected.`);
-      res.send(page(`${appDef.displayName} connected`, "You can close this window and keep talking."));
+      // Verify the connection actually works before claiming it does: a valid
+      // OAuth grant does not guarantee the MCP server will serve this account.
+      const health = await probeMcp(appDef.mcpUrl, tokens.access_token);
+      if (health.ok) {
+        console.log(`[connect] ${appDef.displayName} connected and working for ${verified.userId}`);
+        notifyUser(verified.userId, `${appDef.displayName} is connected.`);
+        res.send(page(`${appDef.displayName} connected`, "You can close this window and keep talking."));
+      } else {
+        console.warn(`[connect] ${appDef.id} signed in but unusable for ${verified.userId}:`, health.detail);
+        res.send(
+          page(
+            "Signed in, but not usable yet",
+            `Your account was linked, but ${appDef.displayName} refused the first request (${health.detail}). ` +
+              "The credential is saved, so it will start working as soon as access is granted.",
+          ),
+        );
+      }
     } catch (err) {
       console.error("[connect] callback failed:", err);
       res.status(502).send(page("Could not connect", "Something went wrong. Please try again."));

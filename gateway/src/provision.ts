@@ -1,7 +1,7 @@
 import { anthropic } from "./cma.js";
 import { config } from "./config.js";
 import { loadStore, saveStore, userResources, type UserResources } from "./store.js";
-import { APPS } from "./apps.js";
+import { activeApps } from "./apps.js";
 
 const AGENT_SYSTEM_PROMPT = `You are the action agent behind a voice assistant that runs on smart glasses and phones.
 The user talks to a real-time voice layer; that layer delegates tasks to you and speaks your replies aloud.
@@ -82,13 +82,13 @@ function appSignature(servers: readonly unknown[], tools: readonly unknown[]): s
 }
 
 function mcpServers() {
-  return Object.values(APPS).map((a) => ({ type: "url" as const, name: a.id, url: a.mcpUrl }));
+  return activeApps().map((a) => ({ type: "url" as const, name: a.id, url: a.mcpUrl }));
 }
 
 function agentTools() {
   return [
     { type: "agent_toolset_20260401" as const },
-    ...Object.values(APPS).map((a) => ({
+    ...activeApps().map((a) => ({
       type: "mcp_toolset" as const,
       mcp_server_name: a.id,
       // Connected apps are read-only today, so a confirmation prompt would only

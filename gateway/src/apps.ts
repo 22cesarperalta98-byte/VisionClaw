@@ -1,16 +1,21 @@
 /**
  * Connectable app registry.
  *
- * Adding an extension is one entry here plus (for MCP apps) one entry in the
- * agent config's `mcp_servers`. Credentials are stored per user in that user's
- * vault, keyed by the MCP server URL; Anthropic refreshes OAuth tokens.
+ * Adding an extension is one entry here. Credentials are stored per user in
+ * that user's vault, keyed by the MCP server URL; Anthropic refreshes OAuth
+ * tokens and injects them as a bearer on every call to that server.
+ *
+ * An entry is *active* only when its MCP URL resolves and it is not disabled.
+ * Inactive entries are invisible to the agent config, `/apps`, and `/connect`.
  */
 
 export interface ConnectableApp {
   id: string;
   displayName: string;
-  /** MCP server the agent talks to. Vault credentials are matched to this URL. */
-  mcpUrl: string;
+  /** Fixed MCP server URL. Use `mcpUrlEnv` instead for self-hosted deployments. */
+  mcpUrl?: string;
+  /** Env var holding the MCP server URL; the app stays hidden until it is set. */
+  mcpUrlEnv?: string;
   authorizeUrl: string;
   tokenUrl: string;
   scopes: string[];
@@ -18,41 +23,100 @@ export interface ConnectableApp {
   authorizeParams?: Record<string, string>;
   clientIdEnv: string;
   clientSecretEnv: string;
+  /** Kept for reference but never offered; see the note on each entry. */
+  disabled?: boolean;
 }
 
+const GOOGLE_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
+// offline + consent are required for Google to return a refresh token. Without
+// one the vault credential dies at the first expiry.
+const GOOGLE_AUTHORIZE_PARAMS = {
+  access_type: "offline",
+  prompt: "consent",
+  include_granted_scopes: "true",
+};
+
 export const APPS: Record<string, ConnectableApp> = {
-  // KNOWN LIMITATION (verified 2026-07): Google's official Calendar MCP server
-  // ships under the Google Workspace Developer Preview Program. With a personal
-  // Gmail account, `initialize` and `tools/list` succeed but every `tools/call`
-  // returns "The caller does not have permission" — reproduced with a direct
-  // token call, so it is not a client or credential problem. The same token
-  // works fine against the Calendar REST API. Using this from a consumer app
-  // requires a Workspace account plus preview-program enrollment.
-  //
-  // For consumer users, wrap the Calendar REST API in a small MCP server of our
-  // own and point `mcpUrl` at that instead; the vault credential mechanism is
-  // unchanged. On-device EventKit tools cover interactive asks in the meantime.
+  /**
+   * Google's own Calendar MCP server.
+   *
+   * DISABLED — verified 2026-07: it ships under the Google Workspace Developer
+   * Preview Program. With a personal Gmail account `initialize` and
+   * `tools/list` succeed, but every `tools/call` returns "The caller does not
+   * have permission" (reproduced with a direct token call, so not a client or
+   * credential problem; the same token works against the Calendar REST API).
+   * Using it needs a Workspace account plus preview enrollment, which rules it
+   * out for consumer users. Re-enable if that changes.
+   */
   gcal: {
     id: "gcal",
-    displayName: "Google Calendar",
+    displayName: "Google Calendar (Google-hosted)",
     mcpUrl: "https://calendarmcp.googleapis.com/mcp/v1",
-    authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-    tokenUrl: "https://oauth2.googleapis.com/token",
+    authorizeUrl: GOOGLE_AUTHORIZE,
+    tokenUrl: GOOGLE_TOKEN,
     scopes: [
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events.freebusy",
       "https://www.googleapis.com/auth/calendar.events.readonly",
     ],
-    // offline + consent are required for Google to return a refresh_token.
-    // Without a refresh token the vault credential dies within the hour.
-    authorizeParams: { access_type: "offline", prompt: "consent", include_granted_scopes: "true" },
+    authorizeParams: GOOGLE_AUTHORIZE_PARAMS,
+    clientIdEnv: "GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+    disabled: true,
+  },
+
+  /**
+   * Self-hosted Google Workspace MCP (taylorwilsdon/google_workspace_mcp, MIT),
+   * run in external-OAuth mode so it accepts the bearer token the vault injects
+   * instead of running its own OAuth flow. Works with consumer Gmail because it
+   * simply calls the Google REST APIs.
+   *
+   * Deploy with:
+   *   MCP_ENABLE_OAUTH21=true EXTERNAL_OAUTH21_PROVIDER=true \
+   *   GOOGLE_OAUTH_CLIENT_ID=<same client id> WORKSPACE_MCP_TOOLS=calendar \
+   *   <run> --transport streamable-http --read-only
+   * then set WORKSPACE_MCP_URL to its public https URL, ending in /mcp/.
+   */
+  gcalSelfHosted: {
+    id: "gcal-self",
+    displayName: "Google Calendar",
+    mcpUrlEnv: "WORKSPACE_MCP_URL",
+    authorizeUrl: GOOGLE_AUTHORIZE,
+    tokenUrl: GOOGLE_TOKEN,
+    scopes: [
+      // The server validates bearer tokens against Google's userinfo endpoint,
+      // so identity scopes are required alongside the data scope.
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      // Read-only keeps writes on-device via EventKit. Swap for
+      // .../auth/calendar.events to let the background agent create events.
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ],
+    authorizeParams: GOOGLE_AUTHORIZE_PARAMS,
     clientIdEnv: "GOOGLE_CLIENT_ID",
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
   },
 };
 
-export function getApp(id: string): ConnectableApp | undefined {
-  return APPS[id];
+/** MCP URL for an app, or null when a self-hosted app has no URL configured. */
+export function mcpUrlFor(app: ConnectableApp): string | null {
+  if (app.mcpUrl) return app.mcpUrl;
+  if (app.mcpUrlEnv) return process.env[app.mcpUrlEnv] || null;
+  return null;
+}
+
+/** Apps that are enabled and have a resolvable endpoint. */
+export function activeApps(): Array<ConnectableApp & { mcpUrl: string }> {
+  return Object.values(APPS).flatMap((app) => {
+    if (app.disabled) return [];
+    const url = mcpUrlFor(app);
+    return url ? [{ ...app, mcpUrl: url }] : [];
+  });
+}
+
+export function getApp(id: string): (ConnectableApp & { mcpUrl: string }) | undefined {
+  return activeApps().find((a) => a.id === id);
 }
 
 export function appCredentials(app: ConnectableApp): { clientId: string; clientSecret: string } | null {
