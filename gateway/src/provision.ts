@@ -45,19 +45,38 @@ export async function ensureShared(): Promise<{ agentId: string; environmentId: 
     const agent = await anthropic.beta.agents.retrieve(store.shared.agentId);
     // Compare servers *and* tool config: a changed permission policy is drift
     // just as much as a new app is.
-    const have = appSignature(agent.mcp_servers ?? [], agent.tools ?? []);
-    const want = appSignature(mcpServers(), agentTools());
-    if (have !== want) {
+    const appsDrifted =
+      appSignature(agent.mcp_servers ?? [], agent.tools ?? []) !== appSignature(mcpServers(), agentTools());
+    const modelDrifted = modelSignature(agent.model) !== modelSignature(wantModel());
+    if (appsDrifted || modelDrifted) {
       const updated = await anthropic.beta.agents.update(store.shared.agentId, {
         mcp_servers: mcpServers(),
         tools: agentTools(),
+        model: wantModel(),
       });
       store.shared.agentVersion = updated.version;
-      console.log("[provision] agent apps reconciled, version", updated.version);
+      const what = [appsDrifted && "apps", modelDrifted && "model"].filter(Boolean).join(" + ");
+      console.log(`[provision] agent ${what} reconciled, version`, updated.version);
     }
   }
   await saveStore();
   return { agentId: store.shared.agentId, environmentId: store.shared.environmentId };
+}
+
+/**
+ * Model config as stored on the agent. Reconciled alongside the app surface,
+ * because AGENT_MODEL / AGENT_EFFORT are otherwise read only when the agent is
+ * first created -- changing them later looks like it works and silently does
+ * nothing, which cost us a round of latency measurements against a setting that
+ * was never applied.
+ */
+function modelSignature(model: unknown): string {
+  const m = model as { id?: string; effort?: { type?: string } } | null;
+  return `${m?.id ?? ""}:${m?.effort?.type ?? ""}`;
+}
+
+function wantModel() {
+  return { id: config.agentModel, effort: { type: config.agentEffort } };
 }
 
 /** Canonical projection of the app surface, for drift detection. */
