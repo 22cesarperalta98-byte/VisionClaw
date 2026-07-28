@@ -1,5 +1,42 @@
 import SwiftUI
 
+/// Reachability of the hosted gateway, resolved by an actual authenticated
+/// request. "Configured" and "working" are different things -- a wrong token
+/// looks identical to a correct one until something calls the server.
+enum GatewayStatus: Equatable {
+  case checking
+  case ready
+  case notConfigured
+  case unauthorized
+  case unreachable(String)
+}
+
+private struct GatewayStatusLabel: View {
+  let status: GatewayStatus
+
+  var body: some View {
+    switch status {
+    case .checking:
+      ProgressView()
+    case .ready:
+      Label("Connected", systemImage: "checkmark.circle.fill")
+        .foregroundStyle(.green)
+        .labelStyle(.titleAndIcon)
+    case .notConfigured:
+      Text("Not set up")
+        .foregroundStyle(.secondary)
+    case .unauthorized:
+      Label("Token rejected", systemImage: "exclamationmark.triangle.fill")
+        .foregroundStyle(.orange)
+        .labelStyle(.titleAndIcon)
+    case .unreachable(let why):
+      Label(why, systemImage: "exclamationmark.triangle.fill")
+        .foregroundStyle(.orange)
+        .labelStyle(.titleAndIcon)
+    }
+  }
+}
+
 struct SettingsView: View {
   @Environment(\.dismiss) private var dismiss
   private let settings = SettingsManager.shared
@@ -18,6 +55,7 @@ struct SettingsView: View {
   @State private var videoStreamingEnabled: Bool = true
   @State private var proactiveNotificationsEnabled: Bool = true
   @State private var showResetConfirmation = false
+  @State private var gatewayStatus: GatewayStatus = .checking
 
   var body: some View {
     NavigationView {
@@ -40,9 +78,9 @@ struct SettingsView: View {
             .frame(minHeight: 200)
         }
 
-        Section(header: Text("Action Agent"), footer: Text(selectedBackend == .selfHosted
-          ? "Self-hosted: connect to an OpenClaw gateway running on your own machine."
-          : "Cloud: connect to a hosted VisionClaw gateway. No local install needed.")) {
+        Section(header: Text("Action Agent"), footer: Text(selectedBackend == .cloud
+          ? "Runs in the cloud. Nothing to install, and it keeps working when your computer is asleep."
+          : "Runs on your own machine. Requires OpenClaw installed and running, and stops when that machine sleeps.")) {
           Picker("Backend", selection: $selectedBackend) {
             ForEach(AgentBackend.allCases, id: \.self) { backend in
               Text(backend.rawValue).tag(backend)
@@ -52,26 +90,11 @@ struct SettingsView: View {
         }
 
         if selectedBackend == .cloud {
-          Section(header: Text("Cloud Gateway")) {
-            VStack(alignment: .leading, spacing: 4) {
-              Text("Gateway URL")
-                .font(.caption)
-                .foregroundColor(.secondary)
-              TextField("https://gateway.example.com", text: $cloudGatewayURL)
-                .autocapitalization(.none)
-                .disableAutocorrection(true)
-                .keyboardType(.URL)
-                .font(.system(.body, design: .monospaced))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-              Text("Access Token")
-                .font(.caption)
-                .foregroundColor(.secondary)
-              TextField("Your gateway access token", text: $cloudGatewayToken)
-                .autocapitalization(.none)
-                .disableAutocorrection(true)
-                .font(.system(.body, design: .monospaced))
+          Section {
+            HStack {
+              Text("Status")
+              Spacer()
+              GatewayStatusLabel(status: gatewayStatus)
             }
 
             NavigationLink("Connected Apps") {
@@ -80,6 +103,34 @@ struct SettingsView: View {
 
             NavigationLink("Recent Tasks") {
               RecentTasksView()
+            }
+          }
+
+          // The URL and token ship with working defaults, so most people never
+          // need to see them; surfacing them as primary fields made a configured
+          // setup look like one awaiting setup.
+          Section {
+            DisclosureGroup("Gateway settings") {
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Gateway URL")
+                  .font(.caption)
+                  .foregroundColor(.secondary)
+                TextField("https://gateway.example.com", text: $cloudGatewayURL)
+                  .autocapitalization(.none)
+                  .disableAutocorrection(true)
+                  .keyboardType(.URL)
+                  .font(.system(.body, design: .monospaced))
+              }
+
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Access Token")
+                  .font(.caption)
+                  .foregroundColor(.secondary)
+                TextField("Your gateway access token", text: $cloudGatewayToken)
+                  .autocapitalization(.none)
+                  .disableAutocorrection(true)
+                  .font(.system(.body, design: .monospaced))
+              }
             }
           }
         }
@@ -188,6 +239,38 @@ struct SettingsView: View {
       .onAppear {
         loadCurrentValues()
       }
+      .task(id: selectedBackend) {
+        await refreshGatewayStatus()
+      }
+    }
+  }
+
+  /// Ask the gateway for something that needs a valid token. /apps is the
+  /// cheapest such route, and distinguishing 401 from a transport failure is
+  /// the whole point -- they need opposite fixes.
+  private func refreshGatewayStatus() async {
+    guard selectedBackend == .cloud else { return }
+    gatewayStatus = .checking
+    guard GeminiConfig.isAgentConfigured,
+          let url = URL(string: "\(GeminiConfig.agentBaseURL)/apps") else {
+      gatewayStatus = .notConfigured
+      return
+    }
+
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 15
+    request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
+
+    do {
+      let (_, response) = try await URLSession.shared.data(for: request)
+      let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+      switch code {
+      case 200: gatewayStatus = .ready
+      case 401, 403: gatewayStatus = .unauthorized
+      default: gatewayStatus = .unreachable("Server error \(code)")
+      }
+    } catch {
+      gatewayStatus = .unreachable("Unreachable")
     }
   }
 

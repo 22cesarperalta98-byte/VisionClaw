@@ -2,9 +2,11 @@ import Foundation
 
 /// Which action-agent backend the app talks to. Both speak the same protocol;
 /// only the endpoint and token differ.
+/// Order matters: `allCases` drives the picker, and the first segment reads as
+/// the primary option. Cloud leads because it is the default.
 enum AgentBackend: String, CaseIterable {
-  case selfHosted = "Self-hosted"
   case cloud = "Cloud"
+  case selfHosted = "Self-hosted"
 }
 
 final class SettingsManager {
