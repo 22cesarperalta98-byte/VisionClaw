@@ -166,7 +166,62 @@ export function registerConnectRoutes(
         access_token: string;
         refresh_token?: string;
         expires_in?: number;
+        scope?: string;
       };
+
+      // Granted scopes can be narrower than requested (the user can decline
+      // individual permissions), which surfaces later as opaque "caller does not
+      // have permission" errors from the provider. Log what we actually got.
+      const granted = (tokens.scope ?? "").split(" ").filter(Boolean);
+      const missing = appDef.scopes.filter((s) => !granted.includes(s));
+      console.log(`[connect] ${appDef.id} granted scopes:`, granted.join(" ") || "(none reported)");
+      if (missing.length > 0) {
+        console.warn(`[connect] ${appDef.id} MISSING scopes:`, missing.join(" "));
+      }
+
+      // DIAG=1: probe the provider directly with the fresh token, so an opaque
+      // "permission denied" from the agent can be attributed to the token, the
+      // REST API, or the MCP endpoint specifically.
+      if (process.env.DIAG === "1") {
+        try {
+          const rest = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
+            headers: { Authorization: `Bearer ${tokens.access_token}` },
+          });
+          console.log("[diag] calendar REST status:", rest.status, (await rest.text()).slice(0, 300));
+          const mcpCall = async (label: string, body: object) => {
+            const r = await fetch(appDef.mcpUrl, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${tokens.access_token}`,
+                "Content-Type": "application/json",
+                Accept: "application/json, text/event-stream",
+              },
+              body: JSON.stringify(body),
+            });
+            console.log(`[diag] MCP ${label}:`, r.status, (await r.text()).slice(0, 600));
+          };
+          await mcpCall("initialize", {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: { name: "visionclaw-diag", version: "0.1.0" },
+            },
+          });
+          await mcpCall("tools/list", { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+          // The operation the agent actually fails on.
+          await mcpCall("tools/call list_calendars", {
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: { name: "list_calendars", arguments: {} },
+          });
+        } catch (e) {
+          console.warn("[diag] probe failed:", e);
+        }
+      }
 
       const { vaultId } = await ensureUser(verified.userId);
 

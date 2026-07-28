@@ -21,6 +21,17 @@ export interface ConnectableApp {
 }
 
 export const APPS: Record<string, ConnectableApp> = {
+  // KNOWN LIMITATION (verified 2026-07): Google's official Calendar MCP server
+  // ships under the Google Workspace Developer Preview Program. With a personal
+  // Gmail account, `initialize` and `tools/list` succeed but every `tools/call`
+  // returns "The caller does not have permission" — reproduced with a direct
+  // token call, so it is not a client or credential problem. The same token
+  // works fine against the Calendar REST API. Using this from a consumer app
+  // requires a Workspace account plus preview-program enrollment.
+  //
+  // For consumer users, wrap the Calendar REST API in a small MCP server of our
+  // own and point `mcpUrl` at that instead; the vault credential mechanism is
+  // unchanged. On-device EventKit tools cover interactive asks in the meantime.
   gcal: {
     id: "gcal",
     displayName: "Google Calendar",

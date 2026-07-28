@@ -33,25 +33,70 @@ export async function ensureShared(): Promise<{ agentId: string; environmentId: 
       name: "VisionClaw Action Agent",
       model: { id: config.agentModel, effort: config.agentEffort },
       system: AGENT_SYSTEM_PROMPT,
-      mcp_servers: Object.values(APPS).map((a) => ({
-        type: "url" as const,
-        name: a.id,
-        url: a.mcpUrl,
-      })),
-      tools: [
-        { type: "agent_toolset_20260401" as const },
-        ...Object.values(APPS).map((a) => ({
-          type: "mcp_toolset" as const,
-          mcp_server_name: a.id,
-        })),
-      ],
+      mcp_servers: mcpServers(),
+      tools: agentTools(),
     });
     store.shared.agentId = agent.id;
     store.shared.agentVersion = agent.version;
     console.log("[provision] agent created:", agent.id, "version", agent.version);
+  } else {
+    // Reconcile: adding an app to the registry must reach an agent that already
+    // exists, or its new tools are silently missing. Version-bump only on drift.
+    const agent = await anthropic.beta.agents.retrieve(store.shared.agentId);
+    // Compare servers *and* tool config: a changed permission policy is drift
+    // just as much as a new app is.
+    const have = appSignature(agent.mcp_servers ?? [], agent.tools ?? []);
+    const want = appSignature(mcpServers(), agentTools());
+    if (have !== want) {
+      const updated = await anthropic.beta.agents.update(store.shared.agentId, {
+        mcp_servers: mcpServers(),
+        tools: agentTools(),
+      });
+      store.shared.agentVersion = updated.version;
+      console.log("[provision] agent apps reconciled, version", updated.version);
+    }
   }
   await saveStore();
   return { agentId: store.shared.agentId, environmentId: store.shared.environmentId };
+}
+
+/** Canonical projection of the app surface, for drift detection. */
+function appSignature(servers: readonly unknown[], tools: readonly unknown[]): string {
+  const s = servers
+    .map((raw) => {
+      const x = raw as { name?: string; url?: string };
+      return `${x.name}@${x.url}`;
+    })
+    .sort();
+  const t = tools
+    .map((raw) => {
+      const x = raw as {
+        type?: string;
+        mcp_server_name?: string;
+        default_config?: { permission_policy?: { type?: string } } | null;
+      };
+      return `${x.type}:${x.mcp_server_name ?? ""}:${x.default_config?.permission_policy?.type ?? ""}`;
+    })
+    .sort();
+  return JSON.stringify({ s, t });
+}
+
+function mcpServers() {
+  return Object.values(APPS).map((a) => ({ type: "url" as const, name: a.id, url: a.mcpUrl }));
+}
+
+function agentTools() {
+  return [
+    { type: "agent_toolset_20260401" as const },
+    ...Object.values(APPS).map((a) => ({
+      type: "mcp_toolset" as const,
+      mcp_server_name: a.id,
+      // Connected apps are read-only today, so a confirmation prompt would only
+      // stall a hands-free voice turn. Destructive tools should flip to
+      // always_ask and be surfaced as a spoken confirmation instead.
+      default_config: { permission_policy: { type: "always_allow" as const } },
+    })),
+  ];
 }
 
 async function sessionUsable(sessionId: string): Promise<boolean> {
@@ -107,6 +152,22 @@ export async function ensureUser(userId: string): Promise<Required<UserResources
     });
     u.sessionId = session.id;
     console.log(`[provision] session for ${userId}:`, session.id);
+  } else {
+    // A live session keeps the tool slate it was created with, so newly added
+    // apps need a session-local update too. History and memory are preserved.
+    try {
+      const live = await anthropic.beta.sessions.retrieve(u.sessionId);
+      const have = appSignature(live.agent?.mcp_servers ?? [], live.agent?.tools ?? []);
+      const want = appSignature(mcpServers(), agentTools());
+      if (have !== want && live.status === "idle") {
+        await anthropic.beta.sessions.update(u.sessionId, {
+          agent: { mcp_servers: mcpServers(), tools: agentTools() },
+        });
+        console.log(`[provision] session apps reconciled for ${userId}`);
+      }
+    } catch (err) {
+      console.warn(`[provision] could not reconcile session apps for ${userId}:`, err);
+    }
   }
 
   await saveStore();

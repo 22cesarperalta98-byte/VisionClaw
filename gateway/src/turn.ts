@@ -1,5 +1,74 @@
 import { anthropic } from "./cma.js";
 
+/**
+ * A tool gated by `always_ask` parks the session in `requires_action` until the
+ * client answers. Nothing else answers for us, so approve automatically and let
+ * the drain continue; without this the loop waits forever. Returns false when
+ * the pending action is something we cannot resolve, so the caller can stop.
+ *
+ * When destructive tools arrive, this is the hook that should instead surface a
+ * spoken confirmation and wait for the user's actual answer.
+ */
+async function resolvePendingAction(sessionId: string, eventIds: string[]): Promise<boolean> {
+  if (eventIds.length === 0) return false;
+  let resolved = false;
+  for (const toolUseId of eventIds) {
+    try {
+      await anthropic.beta.sessions.events.send(sessionId, {
+        events: [{ type: "user.tool_confirmation", tool_use_id: toolUseId, result: "allow" }],
+      });
+      resolved = true;
+    } catch (err) {
+      console.warn("[turn] could not confirm pending tool use", toolUseId, err);
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Find and answer any confirmation the session is already parked on. A turn
+ * abandoned mid-flight (client hang-up, gateway restart) leaves the session in
+ * `requires_action`, and the API then rejects every new `user.message` until it
+ * is answered — so without this a single interrupted turn wedges the user for good.
+ */
+async function clearPendingActions(sessionId: string): Promise<void> {
+  const recent: Array<{ type: string; stop_reason?: { type?: string; event_ids?: string[] } }> = [];
+  for await (const ev of anthropic.beta.sessions.events.list(sessionId)) {
+    recent.push(ev as (typeof recent)[number]);
+    if (recent.length >= 400) break;
+  }
+  for (let i = recent.length - 1; i >= 0 && i > recent.length - 12; i--) {
+    const ev = recent[i];
+    if (ev.type === "session.status_idle" && ev.stop_reason?.type === "requires_action") {
+      const ids = ev.stop_reason.event_ids ?? [];
+      if (ids.length > 0) {
+        console.log("[turn] clearing stale pending confirmation(s):", ids.join(","));
+        await resolvePendingAction(sessionId, ids);
+      }
+      return;
+    }
+  }
+}
+
+/** Send a turn, self-healing if the session is parked on an unanswered confirmation. */
+async function sendUserTurn(sessionId: string, userText: string, contextNotes: string[]): Promise<void> {
+  const events = [
+    { type: "user.message" as const, content: [{ type: "text" as const, text: userText }] },
+    ...contextNotes.map((note) => ({
+      type: "system.message" as const,
+      content: [{ type: "text" as const, text: note }],
+    })),
+  ];
+  try {
+    await anthropic.beta.sessions.events.send(sessionId, { events });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("waiting on responses to events")) throw err;
+    await clearPendingActions(sessionId);
+    await anthropic.beta.sessions.events.send(sessionId, { events });
+  }
+}
+
 export interface TurnResult {
   /** Final text if it finished within the wait budget, else null. */
   text: string | null;
@@ -27,15 +96,7 @@ export async function runTurn(
 
   // system.message events are only accepted immediately after a user.message
   // in the same request, so queued context rides along with the next turn.
-  await anthropic.beta.sessions.events.send(sessionId, {
-    events: [
-      { type: "user.message", content: [{ type: "text", text: userText }] },
-      ...contextNotes.map((note) => ({
-        type: "system.message" as const,
-        content: [{ type: "text" as const, text: note }],
-      })),
-    ],
-  });
+  await sendUserTurn(sessionId, userText, contextNotes);
 
   const parts: string[] = [];
   let timedOut = false;
@@ -52,10 +113,11 @@ export async function runTurn(
       } else if (event.type === "session.status_terminated") {
         break;
       } else if (event.type === "session.status_idle") {
-        // Transient idle while the session waits on a client-side action is not
-        // terminal; anything else means the turn is done.
-        const reason = (event as { stop_reason?: { type?: string } }).stop_reason?.type;
-        if (reason !== "requires_action") break;
+        // Idle pending a client action is not terminal, but only if we actually
+        // resolve it; otherwise the drain would hang until the socket dies.
+        const stop = (event as { stop_reason?: { type?: string; event_ids?: string[] } }).stop_reason;
+        if (stop?.type !== "requires_action") break;
+        if (!(await resolvePendingAction(sessionId, stop.event_ids ?? []))) break;
       }
     }
     return parts.join("\n\n").trim();
@@ -100,15 +162,7 @@ export async function runTurnStreaming(
     event_deltas: ["agent.message"],
   });
 
-  await anthropic.beta.sessions.events.send(sessionId, {
-    events: [
-      { type: "user.message", content: [{ type: "text", text: userText }] },
-      ...contextNotes.map((note) => ({
-        type: "system.message" as const,
-        content: [{ type: "text" as const, text: note }],
-      })),
-    ],
-  });
+  await sendUserTurn(sessionId, userText, contextNotes);
 
   const parts: string[] = [];
   // event_id -> content index -> text already emitted from deltas
@@ -155,8 +209,9 @@ export async function runTurnStreaming(
     } else if (event.type === "session.status_terminated") {
       break;
     } else if (event.type === "session.status_idle") {
-      const reason = (event as { stop_reason?: { type?: string } }).stop_reason?.type;
-      if (reason !== "requires_action") break;
+      const stop = (event as { stop_reason?: { type?: string; event_ids?: string[] } }).stop_reason;
+      if (stop?.type !== "requires_action") break;
+      if (!(await resolvePendingAction(sessionId, stop.event_ids ?? []))) break;
     }
   }
 
