@@ -84,6 +84,85 @@ export async function runTurn(
   return { text: null, deferred: true };
 }
 
+/**
+ * Streaming variant: forwards text as it is generated via `emit`, using CMA
+ * live previews (event_deltas). Deltas are best-effort prefixes; the buffered
+ * agent.message is authoritative, so on arrival any text the preview missed is
+ * emitted as a remainder. Returns the final full text.
+ */
+export async function runTurnStreaming(
+  sessionId: string,
+  userText: string,
+  contextNotes: string[],
+  emit: (text: string) => void,
+): Promise<string> {
+  const stream = await anthropic.beta.sessions.events.stream(sessionId, {
+    event_deltas: ["agent.message"],
+  });
+
+  await anthropic.beta.sessions.events.send(sessionId, {
+    events: [
+      { type: "user.message", content: [{ type: "text", text: userText }] },
+      ...contextNotes.map((note) => ({
+        type: "system.message" as const,
+        content: [{ type: "text" as const, text: note }],
+      })),
+    ],
+  });
+
+  const parts: string[] = [];
+  // event_id -> content index -> text already emitted from deltas
+  const previews = new Map<string, Map<number, string>>();
+  let currentEventId: string | null = null;
+
+  const separatorFor = (eventId: string) => {
+    if (currentEventId !== null && currentEventId !== eventId) emit("\n\n");
+    currentEventId = eventId;
+  };
+
+  for await (const event of stream) {
+    if (event.type === "event_delta") {
+      const d = event.delta;
+      if (d.type === "content_delta" && d.content.type === "text" && d.content.text) {
+        separatorFor(event.event_id);
+        let byIndex = previews.get(event.event_id);
+        if (!byIndex) {
+          byIndex = new Map();
+          previews.set(event.event_id, byIndex);
+        }
+        const i = d.index ?? 0;
+        byIndex.set(i, (byIndex.get(i) ?? "") + d.content.text);
+        emit(d.content.text);
+      }
+    } else if (event.type === "agent.message") {
+      const byIndex = previews.get(event.id) ?? new Map<number, string>();
+      separatorFor(event.id);
+      const blockTexts: string[] = [];
+      event.content.forEach((block, i) => {
+        if (block.type !== "text" || !block.text) return;
+        const seen = byIndex.get(i) ?? "";
+        if (block.text.length > seen.length) emit(block.text.slice(seen.length));
+        blockTexts.push(block.text);
+      });
+      previews.delete(event.id);
+      const full = blockTexts.join("\n").trim();
+      if (full) parts.push(full);
+    } else if (event.type === "session.error") {
+      const msg = "Something went wrong while working on that. Try again in a moment.";
+      emit(msg);
+      parts.push(msg);
+      break;
+    } else if (event.type === "session.status_terminated") {
+      break;
+    } else if (event.type === "session.status_idle") {
+      const reason = (event as { stop_reason?: { type?: string } }).stop_reason?.type;
+      if (reason !== "requires_action") break;
+    }
+  }
+
+  return parts.join("\n\n").trim();
+}
+
 // ---------- queued context ----------
 // The API rejects a standalone system.message, so context is queued per user
 // and attached to that user's next turn. In-memory: acceptable loss on restart

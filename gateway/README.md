@@ -46,7 +46,7 @@ is an alternative backend, not a replacement.
 | Route | Purpose |
 |---|---|
 | `GET /v1/chat/completions` | reachability probe (the app's connection check) |
-| `POST /v1/chat/completions` | one agent turn. Sends only the newest user message — the managed session owns durable history (server-side compaction included) |
+| `POST /v1/chat/completions` | one agent turn. Sends only the newest user message — the managed session owns durable history (server-side compaction included). With `"stream": true`, responds with OpenAI-style SSE chunks generated live from the agent's output |
 | `POST /context` | queue voice-session context (`{"context": "..."}`); it attaches to the user's next turn as a system-level event (the API rejects standalone system messages) |
 | `GET /tasks?limit=N` | recent delegated tasks + results, for the app's Recent Tasks view |
 | `ws://host:port` | event channel; same protocol-v3 handshake as the local gateway. Late task results arrive as `heartbeat` events, scheduled-task summaries as `cron` events |
@@ -56,7 +56,9 @@ is an alternative backend, not a replacement.
 `POST /v1/chat/completions` waits up to `QUICK_ANSWER_TIMEOUT_MS` (default 30s).
 If the agent is still working, the call returns an acknowledgement immediately
 and the final result is pushed over the WebSocket when it lands — the voice
-layer never blocks on a long task.
+layer never blocks on a long task. The same budget applies to streaming
+requests: past it, the stream closes with an acknowledgement chunk and the
+final text arrives as a proactive event.
 
 ## Notes and roadmap
 
@@ -64,6 +66,6 @@ layer never blocks on a long task.
   deployments are capped per organization).
 - Memory is a per-user mounted store of small text files, versioned and
   redactable server-side.
-- Roadmap: SSE streaming passthrough for partial answers, connected-app OAuth
-  flows storing credentials into per-user vaults, scheduled reminders via
-  deployments, tool-permission prompts surfaced as spoken confirmations.
+- Roadmap: connected-app OAuth flows storing credentials into per-user vaults,
+  scheduled reminders via deployments, tool-permission prompts surfaced as
+  spoken confirmations, Android parity for the backend switcher.

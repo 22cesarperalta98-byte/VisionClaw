@@ -11,6 +11,8 @@ enum OpenClawConnectionState: Equatable {
 class OpenClawBridge: ObservableObject {
   @Published var lastToolCallStatus: ToolCallStatus = .idle
   @Published var connectionState: OpenClawConnectionState = .notConfigured
+  /// Partial agent output while a cloud-streamed task is running (for live UI).
+  @Published var streamingText: String = ""
 
   private let session: URLSession
   private let pingSession: URLSession
@@ -86,6 +88,10 @@ class OpenClawBridge: ObservableObject {
       conversationHistory = Array(conversationHistory.suffix(maxHistoryTurns * 2))
     }
 
+    // Cloud gateway supports SSE streaming; the local gateway keeps the
+    // original non-streaming path untouched.
+    let useStreaming = GeminiConfig.agentBackend == .cloud
+
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
@@ -96,10 +102,25 @@ class OpenClawBridge: ObservableObject {
     let body: [String: Any] = [
       "model": "openclaw",
       "messages": conversationHistory,
-      "stream": false
+      "stream": useStreaming
     ]
 
-    NSLog("[OpenClaw] Sending %d messages in conversation", conversationHistory.count)
+    NSLog("[OpenClaw] Sending %d messages in conversation (streaming: %d)", conversationHistory.count, useStreaming ? 1 : 0)
+
+    if useStreaming {
+      do {
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let content = try await streamCompletion(request: request)
+        conversationHistory.append(["role": "assistant", "content": content])
+        NSLog("[OpenClaw] Agent result (streamed): %@", String(content.prefix(200)))
+        lastToolCallStatus = .completed(toolName)
+        return .success(content)
+      } catch {
+        NSLog("[OpenClaw] Streaming error: %@", error.localizedDescription)
+        lastToolCallStatus = .failed(toolName, error.localizedDescription)
+        return .failure("Agent error: \(error.localizedDescription)")
+      }
+    }
 
     do {
       request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -136,6 +157,55 @@ class OpenClawBridge: ObservableObject {
       lastToolCallStatus = .failed(toolName, error.localizedDescription)
       return .failure("Agent error: \(error.localizedDescription)")
     }
+  }
+
+  // MARK: - SSE streaming (cloud backend)
+
+  /// Consume an OpenAI-style SSE stream ("data: {...}" chunks terminated by
+  /// "data: [DONE]"), publishing partial text to `streamingText` as it arrives.
+  /// Falls back to plain JSON parsing when the server responds without SSE.
+  private func streamCompletion(request: URLRequest) async throws -> String {
+    streamingText = ""
+
+    let (bytes, response) = try await session.bytes(for: request)
+    guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+      let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+      throw NSError(
+        domain: "OpenClawBridge", code: code,
+        userInfo: [NSLocalizedDescriptionKey: "Agent returned HTTP \(code)"])
+    }
+
+    // Non-SSE response (e.g. an older gateway): collect the body and parse as JSON.
+    if response.mimeType != "text/event-stream" {
+      var data = Data()
+      for try await byte in bytes { data.append(byte) }
+      if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+         let choices = json["choices"] as? [[String: Any]],
+         let message = choices.first?["message"] as? [String: Any],
+         let content = message["content"] as? String {
+        return content
+      }
+      return String(data: data, encoding: .utf8) ?? "OK"
+    }
+
+    var accumulated = ""
+    for try await line in bytes.lines {
+      guard line.hasPrefix("data: ") else { continue }
+      let payload = String(line.dropFirst(6))
+      if payload == "[DONE]" { break }
+
+      guard let data = payload.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let choices = json["choices"] as? [[String: Any]],
+            let delta = choices.first?["delta"] as? [String: Any],
+            let content = delta["content"] as? String else { continue }
+
+      accumulated += content
+      streamingText = accumulated
+    }
+
+    streamingText = ""
+    return accumulated.isEmpty ? "OK" : accumulated
   }
 
   // MARK: - Helpers
