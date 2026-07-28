@@ -1,0 +1,49 @@
+# Google Workspace MCP server (taylorwilsdon/google_workspace_mcp, MIT) run in
+# external-OAuth mode: it accepts the bearer token Anthropic's vault injects and
+# calls the Google REST APIs underneath, so it works with consumer Gmail accounts
+# where Google's own preview-gated Calendar MCP server does not.
+#
+# Deploy from a clone of the upstream repo with this file copied in:
+#   git clone https://github.com/taylorwilsdon/google_workspace_mcp.git
+#   cp <visionclaw>/gateway/deploy/workspace-mcp/fly.toml google_workspace_mcp/
+#   cd google_workspace_mcp && fly launch --no-deploy --copy-config --name <app>
+#   fly secrets set GOOGLE_OAUTH_CLIENT_ID=... GOOGLE_OAUTH_CLIENT_SECRET=...
+#   fly deploy
+#
+# Then point the gateway at it (the trailing /mcp/ matters):
+#   WORKSPACE_MCP_URL=https://<app>.fly.dev/mcp/
+#
+# Note: the vault credential is keyed to this URL. Changing it orphans every
+# stored credential and forces users to reconnect, so put a domain you own in
+# front before onboarding anyone.
+
+app = 'visionclaw-workspace-mcp'
+primary_region = 'sjc'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  MCP_ENABLE_OAUTH21 = 'true'
+  EXTERNAL_OAUTH21_PROVIDER = 'true'
+  # Memory-only credential storage: nothing to persist, safe to scale to zero.
+  WORKSPACE_MCP_STATELESS_MODE = 'true'
+  WORKSPACE_MCP_PORT = '8000'
+  WORKSPACE_EXTERNAL_URL = 'https://visionclaw-workspace-mcp.fly.dev'
+  # Only the calendar tools are loaded; widen this (gmail, tasks, drive, ...)
+  # as you add registry entries with matching scopes.
+  TOOLS = 'calendar'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Stateless in external-OAuth mode (memory-only credentials, no disk writes),
+  # so scaling to zero is safe. A cold start adds a second to the first call.
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
