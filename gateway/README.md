@@ -47,7 +47,8 @@ is an alternative backend, not a replacement.
 |---|---|
 | `GET /v1/chat/completions` | reachability probe (the app's connection check) |
 | `POST /v1/chat/completions` | one agent turn. Sends only the newest user message — the managed session owns durable history (server-side compaction included) |
-| `POST /context` | inject voice-session context (`{"context": "..."}`) as a system-level event, without triggering a reply |
+| `POST /context` | queue voice-session context (`{"context": "..."}`); it attaches to the user's next turn as a system-level event (the API rejects standalone system messages) |
+| `GET /tasks?limit=N` | recent delegated tasks + results, for the app's Recent Tasks view |
 | `ws://host:port` | event channel; same protocol-v3 handshake as the local gateway. Late task results arrive as `heartbeat` events, scheduled-task summaries as `cron` events |
 
 ## Two-speed turns

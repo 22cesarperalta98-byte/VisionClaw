@@ -5,7 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { config } from "./config.js";
 import { initStore } from "./store.js";
 import { ensureUser } from "./provision.js";
-import { runTurn, injectContext } from "./turn.js";
+import { runTurn, queueContext, drainContext } from "./turn.js";
 import { listTasks } from "./tasks.js";
 import { registerSocket, notifyUser } from "./notify.js";
 
@@ -50,10 +50,16 @@ app.post("/v1/chat/completions", async (req, res) => {
   try {
     const { sessionId } = await ensureUser(userId);
     // The session owns durable history; only the newest user turn is sent.
-    const result = await runTurn(sessionId, lastUser, config.quickAnswerTimeoutMs, (lateText) => {
-      const delivered = notifyUser(userId, lateText);
-      if (!delivered) console.warn(`[turn] late result for ${userId} had no connected client`);
-    });
+    const result = await runTurn(
+      sessionId,
+      lastUser,
+      config.quickAnswerTimeoutMs,
+      (lateText) => {
+        const delivered = notifyUser(userId, lateText);
+        if (!delivered) console.warn(`[turn] late result for ${userId} had no connected client`);
+      },
+      drainContext(userId),
+    );
 
     const content = result.deferred
       ? "I'm still working on that. I'll let you know the moment it's done."
@@ -107,14 +113,10 @@ app.post("/context", async (req, res) => {
     res.status(400).json({ error: { message: "context is required" } });
     return;
   }
-  try {
-    const { sessionId } = await ensureUser(userId);
-    await injectContext(sessionId, context);
-    res.sendStatus(204);
-  } catch (err) {
-    console.error("[context] injection failed:", err);
-    res.status(502).json({ error: { message: "agent backend error" } });
-  }
+  // Queued (not sent immediately): the API only accepts system.message events
+  // trailing a user.message, so this rides along with the user's next turn.
+  queueContext(userId, context);
+  res.sendStatus(204);
 });
 
 // ---------- WS: the app's event channel (protocol v3 handshake) ----------
