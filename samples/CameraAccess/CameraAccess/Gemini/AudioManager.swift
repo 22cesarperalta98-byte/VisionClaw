@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import Foundation
 import UIKit
 
@@ -78,25 +79,32 @@ class AudioManager {
     setupAppLifecycleObservers()
   }
 
+  private var vpioUnit: VoiceProcessingIOUnit?
+
   func startCapture() throws {
     guard !isCapturing else { return }
 
-    // Try full-duplex (echo-cancelled) first; if the IO swap misbehaves --
-    // beta OSes, unsupported hardware, 0 Hz formats -- rebuild without it.
-    var lastError: Error?
-    for useVoiceProcessing in [true, false] {
-      do {
-        try startEngine(voiceProcessing: useVoiceProcessing)
-        echoCancellationActive = useVoiceProcessing
-        isCapturing = true
-        NSLog("[Audio] Capture running, echo cancellation: %@", useVoiceProcessing ? "ON" : "OFF (half-duplex fallback)")
-        return
-      } catch {
-        lastError = error
-        NSLog("[Audio] Engine start failed (voiceProcessing=%d): %@", useVoiceProcessing ? 1 : 0, error.localizedDescription)
-      }
+    // Full duplex first, via the raw VoiceProcessingIO unit -- the level
+    // FaceTime-grade VoIP apps use. AVAudioEngine's wrapper mis-negotiates
+    // formats on the iOS 27 beta (0 Hz input); the raw unit lets us DECLARE
+    // the formats instead of reading back whatever it negotiated.
+    do {
+      let unit = try VoiceProcessingIOUnit()
+      unit.onCapturedChunk = { [weak self] chunk in self?.onAudioCaptured?(chunk) }
+      try unit.start()
+      vpioUnit = unit
+      echoCancellationActive = true
+      isCapturing = true
+      NSLog("[Audio] Capture running on raw VPIO, echo cancellation: ON")
+      return
+    } catch {
+      NSLog("[Audio] Raw VPIO unavailable, half-duplex fallback: %@", "\(error)")
     }
-    throw lastError ?? AudioEngineError.zeroSampleRate
+
+    try startEngine(voiceProcessing: false)
+    echoCancellationActive = false
+    isCapturing = true
+    NSLog("[Audio] Capture running, echo cancellation: OFF (half-duplex fallback)")
   }
 
   private func startEngine(voiceProcessing: Bool) throws {
@@ -203,6 +211,10 @@ class AudioManager {
 
   func playAudio(data: Data) {
     guard isCapturing, !data.isEmpty else { return }
+    if let vpioUnit {
+      vpioUnit.enqueuePlayback(data)
+      return
+    }
 
     let playerFormat = AVAudioFormat(
       commonFormat: .pcmFormatFloat32,
@@ -232,16 +244,25 @@ class AudioManager {
   }
 
   func stopPlayback() {
+    if let vpioUnit {
+      vpioUnit.clearPlayback()
+      return
+    }
     playerNode.stop()
     playerNode.play()
   }
 
   func stopCapture() {
     guard isCapturing else { return }
-    audioEngine.inputNode.removeTap(onBus: 0)
-    playerNode.stop()
-    audioEngine.stop()
-    audioEngine.detach(playerNode)
+    if let vpioUnit {
+      vpioUnit.stop()
+      self.vpioUnit = nil
+    } else {
+      audioEngine.inputNode.removeTap(onBus: 0)
+      playerNode.stop()
+      audioEngine.stop()
+      audioEngine.detach(playerNode)
+    }
     isCapturing = false
     // Flush any remaining accumulated audio
     sendQueue.async {
@@ -460,4 +481,216 @@ class AudioManager {
 
     return outputBuffer
   }
+}
+
+
+// MARK: - Raw VoiceProcessingIO
+
+/// The system echo canceller, addressed directly. Capture and playback both
+/// run in Gemini's wire formats (16 kHz / 24 kHz mono Int16) declared up
+/// front, so no conversion happens anywhere and a format the unit cannot do
+/// fails loudly at setup instead of silently delivering nothing.
+final class VoiceProcessingIOUnit {
+  enum VPIOError: Error, CustomStringConvertible {
+    case componentNotFound
+    case osStatus(String, OSStatus)
+    var description: String {
+      switch self {
+      case .componentNotFound: return "VPIO component not found"
+      case .osStatus(let stage, let code): return "\(stage) failed (\(code))"
+      }
+    }
+  }
+
+  var onCapturedChunk: ((Data) -> Void)?
+
+  private var unit: AudioUnit!
+  private let captureBuffer: UnsafeMutableRawPointer
+  private let captureBufferBytes = 16384
+
+  // Playback ring: Gemini audio in, render callback out. The render thread
+  // takes the lock only for a memcpy-sized critical section.
+  private let playbackLock = NSLock()
+  private var playbackData = Data()
+
+  // Capture accumulation happens on the IO thread (callbacks are serial);
+  // delivery hops off it so the send path never blocks audio.
+  private var pendingCapture = Data()
+  private let minSendBytes = 3200  // ~100 ms at 16 kHz mono Int16
+  private let deliveryQueue = DispatchQueue(label: "vpio.delivery")
+
+  init() throws {
+    captureBuffer = UnsafeMutableRawPointer.allocate(byteCount: captureBufferBytes, alignment: 16)
+
+    var desc = AudioComponentDescription(
+      componentType: kAudioUnitType_Output,
+      componentSubType: kAudioUnitSubType_VoiceProcessingIO,
+      componentManufacturer: kAudioUnitManufacturer_Apple,
+      componentFlags: 0,
+      componentFlagsMask: 0)
+    guard let component = AudioComponentFindNext(nil, &desc) else {
+      captureBuffer.deallocate()
+      throw VPIOError.componentNotFound
+    }
+    var instance: AudioUnit?
+    try Self.check("instantiate", AudioComponentInstanceNew(component, &instance))
+    unit = instance
+
+    var one: UInt32 = 1
+    try Self.check("enable mic", AudioUnitSetProperty(
+      unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1,
+      &one, UInt32(MemoryLayout<UInt32>.size)))
+
+    var captureFormat = Self.pcm16Mono(sampleRate: GeminiConfig.inputAudioSampleRate)
+    try Self.check("capture format", AudioUnitSetProperty(
+      unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+      &captureFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
+
+    var playbackFormat = Self.pcm16Mono(sampleRate: GeminiConfig.outputAudioSampleRate)
+    try Self.check("playback format", AudioUnitSetProperty(
+      unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0,
+      &playbackFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
+
+    let ref = Unmanaged.passUnretained(self).toOpaque()
+    var inputCallback = AURenderCallbackStruct(inputProc: vpioCaptureProc, inputProcRefCon: ref)
+    try Self.check("capture callback", AudioUnitSetProperty(
+      unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 1,
+      &inputCallback, UInt32(MemoryLayout<AURenderCallbackStruct>.size)))
+
+    var renderCallback = AURenderCallbackStruct(inputProc: vpioRenderProc, inputProcRefCon: ref)
+    try Self.check("render callback", AudioUnitSetProperty(
+      unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0,
+      &renderCallback, UInt32(MemoryLayout<AURenderCallbackStruct>.size)))
+
+    try Self.check("initialize", AudioUnitInitialize(unit))
+  }
+
+  deinit {
+    captureBuffer.deallocate()
+  }
+
+  func start() throws {
+    try Self.check("start", AudioOutputUnitStart(unit))
+  }
+
+  func stop() {
+    AudioOutputUnitStop(unit)
+    AudioUnitUninitialize(unit)
+    AudioComponentInstanceDispose(unit)
+  }
+
+  func enqueuePlayback(_ data: Data) {
+    playbackLock.lock()
+    playbackData.append(data)
+    playbackLock.unlock()
+  }
+
+  func clearPlayback() {
+    playbackLock.lock()
+    playbackData.removeAll(keepingCapacity: true)
+    playbackLock.unlock()
+  }
+
+  fileprivate func renderCapture(
+    _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+    _ timestamp: UnsafePointer<AudioTimeStamp>,
+    _ bus: UInt32,
+    _ frames: UInt32
+  ) -> OSStatus {
+    let byteCount = min(Int(frames) * 2, captureBufferBytes)
+    var bufferList = AudioBufferList(
+      mNumberBuffers: 1,
+      mBuffers: AudioBuffer(
+        mNumberChannels: 1,
+        mDataByteSize: UInt32(byteCount),
+        mData: captureBuffer))
+    let status = AudioUnitRender(unit, flags, timestamp, bus, frames, &bufferList)
+    guard status == noErr else { return status }
+
+    pendingCapture.append(Data(bytes: captureBuffer, count: Int(bufferList.mBuffers.mDataByteSize)))
+    if pendingCapture.count >= minSendBytes {
+      let chunk = pendingCapture
+      pendingCapture = Data()
+      deliveryQueue.async { [weak self] in self?.onCapturedChunk?(chunk) }
+    }
+    return noErr
+  }
+
+  fileprivate func renderPlayback(
+    _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+    _ frames: UInt32,
+    _ ioData: UnsafeMutablePointer<AudioBufferList>
+  ) -> OSStatus {
+    let buffers = UnsafeMutableAudioBufferListPointer(ioData)
+    var needed = 0
+    for buffer in buffers { needed += Int(buffer.mDataByteSize) }
+
+    playbackLock.lock()
+    let available = min(needed, playbackData.count)
+    let slice = playbackData.prefix(available)
+    if available > 0 { playbackData.removeFirst(available) }
+    playbackLock.unlock()
+
+    var offset = 0
+    for buffer in buffers {
+      guard let target = buffer.mData else { continue }
+      let want = Int(buffer.mDataByteSize)
+      let have = max(0, min(want, available - offset))
+      if have > 0 {
+        slice.withUnsafeBytes { raw in
+          target.copyMemory(from: raw.baseAddress!.advanced(by: offset), byteCount: have)
+        }
+      }
+      if have < want {
+        memset(target.advanced(by: have), 0, want - have)
+      }
+      offset += have
+    }
+    if available == 0 {
+      flags.pointee.insert(.unitRenderAction_OutputIsSilence)
+    }
+    return noErr
+  }
+
+  private static func pcm16Mono(sampleRate: Double) -> AudioStreamBasicDescription {
+    AudioStreamBasicDescription(
+      mSampleRate: sampleRate,
+      mFormatID: kAudioFormatLinearPCM,
+      mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+      mBytesPerPacket: 2,
+      mFramesPerPacket: 1,
+      mBytesPerFrame: 2,
+      mChannelsPerFrame: 1,
+      mBitsPerChannel: 16,
+      mReserved: 0)
+  }
+
+  private static func check(_ stage: String, _ status: OSStatus) throws {
+    guard status == noErr else { throw VPIOError.osStatus(stage, status) }
+  }
+}
+
+private func vpioCaptureProc(
+  _ refCon: UnsafeMutableRawPointer,
+  _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+  _ timestamp: UnsafePointer<AudioTimeStamp>,
+  _ bus: UInt32,
+  _ frames: UInt32,
+  _ ioData: UnsafeMutablePointer<AudioBufferList>?
+) -> OSStatus {
+  Unmanaged<VoiceProcessingIOUnit>.fromOpaque(refCon).takeUnretainedValue()
+    .renderCapture(flags, timestamp, bus, frames)
+}
+
+private func vpioRenderProc(
+  _ refCon: UnsafeMutableRawPointer,
+  _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+  _ timestamp: UnsafePointer<AudioTimeStamp>,
+  _ bus: UInt32,
+  _ frames: UInt32,
+  _ ioData: UnsafeMutablePointer<AudioBufferList>?
+) -> OSStatus {
+  guard let ioData else { return noErr }
+  return Unmanaged<VoiceProcessingIOUnit>.fromOpaque(refCon).takeUnretainedValue()
+    .renderPlayback(flags, frames, ioData)
 }
