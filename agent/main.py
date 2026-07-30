@@ -15,7 +15,7 @@ import logging
 import os
 
 import aiohttp
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, function_tool
+from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions, cli, function_tool
 from livekit.plugins import google
 
 logger = logging.getLogger("visionclaw-agent")
@@ -67,6 +67,10 @@ async def entrypoint(ctx: JobContext):
     await session.start(
         agent=Agent(instructions=INSTRUCTIONS, tools=[execute]),
         room=ctx.room,
+        # Video is opt-in (RoomInputOptions.video_enabled defaults to False);
+        # without this the model gets no frames and hallucinates a scene when
+        # asked what it sees.
+        room_input_options=RoomInputOptions(video_enabled=True),
     )
 
 
