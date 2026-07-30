@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import LiveKit
 import SwiftUI
@@ -25,6 +26,43 @@ final class LiveKitSession: ObservableObject {
   let room = Room()
 
   var isActive: Bool { state == .connected || state == .connecting }
+
+  // MARK: - Zoom
+
+  /// Optical-then-digital zoom applied at the sensor through whichever camera
+  /// track is live (call or preview), so what you pinch into is what the model
+  /// sees. Capped at 8x: past that the wide lens is upscaling, not resolving.
+  @Published private(set) var zoomFactor: CGFloat = 1
+  private var zoomAtGestureStart: CGFloat = 1
+
+  private var activeCaptureDevice: AVCaptureDevice? {
+    let track = localVideoTrack ?? previewTrack
+    return (track?.capturer as? CameraCapturer)?.device
+  }
+
+  func beginZoomGesture() {
+    zoomAtGestureStart = zoomFactor
+  }
+
+  func updateZoom(scale: CGFloat) {
+    guard let device = activeCaptureDevice else { return }
+    let ceiling = min(device.activeFormat.videoMaxZoomFactor, 8)
+    let target = min(max(zoomAtGestureStart * scale, 1), ceiling)
+    do {
+      try device.lockForConfiguration()
+      device.videoZoomFactor = target
+      device.unlockForConfiguration()
+      zoomFactor = target
+    } catch {
+      NSLog("[LiveKit] zoom failed: %@", error.localizedDescription)
+    }
+  }
+
+  /// Hardware zoom resets whenever the camera changes hands (preview <-> call).
+  private func resetZoom() {
+    zoomFactor = 1
+    zoomAtGestureStart = 1
+  }
 
   /// Local, unpublished camera so the screen shows the world before and
   /// between calls. Handed off to the room on connect (one owner at a time).
@@ -75,6 +113,7 @@ final class LiveKitSession: ObservableObject {
         NSLog("[LiveKit] camera unavailable, voice-only: %@", error.localizedDescription)
       }
       state = .connected
+      resetZoom()
     } catch {
       state = .failed(error.localizedDescription)
       await room.disconnect()
@@ -87,6 +126,7 @@ final class LiveKitSession: ObservableObject {
     await room.disconnect()
     localVideoTrack = nil
     state = .disconnected
+    resetZoom()
     await startPreview()
   }
 

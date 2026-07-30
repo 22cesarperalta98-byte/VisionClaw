@@ -16,6 +16,23 @@ struct LiveKitStreamView: View {
       if let track = session.localVideoTrack ?? session.previewTrack {
         SwiftUIVideoView(track, layoutMode: .fill)
           .edgesIgnoringSafeArea(.all)
+          .gesture(
+            MagnificationGesture()
+              .onChanged { scale in session.updateZoom(scale: scale) }
+              .onEnded { _ in session.beginZoomGesture() }
+          )
+          .overlay(alignment: .topLeading) {
+            if session.zoomFactor > 1.05 {
+              Text(String(format: "%.1fx", session.zoomFactor))
+                .font(.system(.footnote, design: .rounded).weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.45), in: Capsule())
+                .padding(.top, 60)
+                .padding(.leading, 16)
+            }
+          }
       }
       if case .failed(let why) = session.state {
         VStack(spacing: 12) {

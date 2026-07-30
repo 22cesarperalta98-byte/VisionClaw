@@ -25,6 +25,7 @@ struct StreamSessionView: View {
   @StateObject private var viewModel: StreamSessionViewModel
   @StateObject private var liveKit = LiveKitSession()
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
+  @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.gemini.rawValue
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -55,6 +56,17 @@ struct StreamSessionView: View {
     .task {
       if captureSource == .iPhoneCamera {
         await liveKit.start()
+      }
+    }
+    .onChange(of: intelligenceRaw) { _ in
+      // The brain is chosen at session start (room-token metadata), so a live
+      // call redials itself to apply the switch -- the user flips a toggle and
+      // three seconds later the other model picks up.
+      Task {
+        if liveKit.isActive {
+          await liveKit.stop()
+          await liveKit.start()
+        }
       }
     }
     .onChange(of: captureSourceRaw) { newRaw in
