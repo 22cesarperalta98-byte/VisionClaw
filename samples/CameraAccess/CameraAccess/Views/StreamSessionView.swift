@@ -9,10 +9,10 @@
 //
 // StreamSessionView.swift
 //
-// The app's front door: starts the selected capture source immediately and
-// brings the voice session up with it, so opening the app means looking at the
-// world with the assistant already listening. The glasses connect flow appears
-// only when Glasses is the selected source and nothing is registered yet.
+// The app's front door. Phone mode joins a LiveKit room on sight -- camera,
+// mic and the assistant all come up together; everything intelligent lives
+// server-side. Glasses mode keeps the DAT streaming flow (assistant voice for
+// glasses returns when their frames publish into the room as a track).
 //
 
 import MWDATCore
@@ -23,9 +23,8 @@ struct StreamSessionView: View {
   let wearables: WearablesInterface?
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
-  @StateObject private var geminiVM = GeminiSessionViewModel()
+  @StateObject private var liveKit = LiveKitSession()
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
-  @State private var showSettings = false
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -39,88 +38,39 @@ struct StreamSessionView: View {
 
   var body: some View {
     ZStack {
-      if viewModel.isStreaming {
-        // Full-screen video view with streaming controls
-        StreamView(viewModel: viewModel, geminiVM: geminiVM)
-      } else if captureSource == .glasses, let wearablesViewModel {
+      if captureSource == .iPhoneCamera {
+        LiveKitStreamView(session: liveKit)
+      } else if viewModel.isStreaming {
+        StreamView(viewModel: viewModel)
+      } else if let wearablesViewModel {
         if wearablesViewModel.registrationState == .registered || wearablesViewModel.hasMockDevice {
-          // Glasses connected: pre-streaming view with resolution + start
           NonStreamView(viewModel: viewModel, wearablesVM: wearablesViewModel)
         } else {
-          // Glasses selected but not paired yet: the connect flow
           HomeScreenView(viewModel: wearablesViewModel)
         }
       } else {
-        // Camera is starting (or was denied). Not a mode chooser -- the only
-        // affordance is fixing whatever kept the camera from coming up.
-        cameraStartingView
+        Color.black.edgesIgnoringSafeArea(.all)
       }
     }
     .task {
-      viewModel.geminiSessionVM = geminiVM
-      geminiVM.attachCamera { [weak viewModel] in
-        await viewModel?.captureStillForAgent()
+      if captureSource == .iPhoneCamera {
+        await liveKit.start()
       }
-      geminiVM.streamingMode = viewModel.streamingMode
-      await autoStartIfNeeded()
     }
-    .onChange(of: viewModel.streamingMode) { newMode in
-      geminiVM.streamingMode = newMode
-    }
-    .onChange(of: captureSourceRaw) { _ in
-      // Source switched in Settings: tear down and come back up on the other one.
+    .onChange(of: captureSourceRaw) { newRaw in
       Task {
-        if viewModel.isStreaming { await viewModel.stopSession() }
-        await autoStartIfNeeded()
+        if CaptureSource(rawValue: newRaw) == .iPhoneCamera {
+          if viewModel.isStreaming { await viewModel.stopSession() }
+          await liveKit.start()
+        } else {
+          await liveKit.stop()
+        }
       }
-    }
-    .onChange(of: viewModel.isStreaming) { streaming in
-      // Voice follows the camera, whichever source produced it.
-      // Not in the simulator: initializing an audio unit at launch aborts in
-      // AURemoteIO (RPC timeout against the sim's audio server, SIGABRT,
-      // uncatchable). The AI button still works there for manual testing.
-      #if !targetEnvironment(simulator)
-      guard streaming, GeminiConfig.isConfigured, !geminiVM.isGeminiActive else { return }
-      Task { await geminiVM.startSession() }
-      #endif
-    }
-    .onAppear {
-      UIApplication.shared.isIdleTimerDisabled = true
-    }
-    .onDisappear {
-      UIApplication.shared.isIdleTimerDisabled = false
     }
     .alert("Error", isPresented: $viewModel.showError) {
-      Button("OK") {
-        viewModel.dismissError()
-      }
+      Button("OK") { viewModel.dismissError() }
     } message: {
       Text(viewModel.errorMessage)
     }
-  }
-
-  /// iPhone capture starts unprompted -- that is the product. Glasses cannot:
-  /// they may be off, unpaired, or on someone's face mid-conversation, so that
-  /// path keeps its explicit start button.
-  private func autoStartIfNeeded() async {
-    guard captureSource == .iPhoneCamera, !viewModel.isStreaming else { return }
-    await viewModel.handleStartIPhone()
-  }
-
-  private var cameraStartingView: some View {
-    ZStack {
-      Color.black.edgesIgnoringSafeArea(.all)
-      VStack(spacing: 16) {
-        ProgressView()
-          .tint(.white)
-        Text("Starting camera")
-          .font(.subheadline)
-          .foregroundStyle(.white.opacity(0.7))
-        Button("Open Settings") { showSettings = true }
-          .font(.footnote)
-          .tint(.white.opacity(0.6))
-      }
-    }
-    .sheet(isPresented: $showSettings) { SettingsView() }
   }
 }

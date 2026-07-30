@@ -62,9 +62,6 @@ class StreamSessionViewModel: ObservableObject {
   @Published var capturedPhoto: UIImage?
   @Published var showPhotoPreview: Bool = false
 
-  // Gemini Live integration
-  var geminiSessionVM: GeminiSessionViewModel?
-
   // The core DAT SDK StreamSession - handles all streaming operations.
   // nil when the Wearables SDK is unavailable (simulator, or a build without
   // glasses); the iPhone camera path never touches it.
@@ -77,31 +74,6 @@ class StreamSessionViewModel: ObservableObject {
   private let wearables: WearablesInterface?
   private let deviceSelector: AutoDeviceSelector?
   private var deviceMonitorTask: Task<Void, Never>?
-  private var iPhoneCameraManager: IPhoneCameraManager?
-
-  /// Non-nil in iPhone mode: lets the view draw an AVCaptureVideoPreviewLayer
-  /// off the live session instead of upscaling the converted frames.
-  var iPhoneCaptureSession: AVCaptureSession? { iPhoneCameraManager?.session }
-
-  /// Shown while pinching, and reset when the camera stops.
-  @Published var iPhoneZoom: CGFloat = 1
-  /// Zoom when the current pinch began; a magnification gesture reports scale
-  /// relative to its own start, not to the last committed value.
-  private var zoomAtGestureStart: CGFloat = 1
-
-  var maxIPhoneZoom: CGFloat { iPhoneCameraManager?.maxAvailableZoom ?? 1 }
-
-  func beginIPhoneZoomGesture() {
-    zoomAtGestureStart = iPhoneZoom
-  }
-
-  func updateIPhoneZoom(scale: CGFloat) {
-    guard let camera = iPhoneCameraManager else { return }
-    let target = min(max(zoomAtGestureStart * scale, 1), camera.maxAvailableZoom)
-    iPhoneZoom = target
-    camera.setZoom(target)
-  }
-
   // CPU-based CIContext for rendering decoded pixel buffers in background
   private let cpuCIContext = CIContext(options: [.useSoftwareRenderer: true])
   // VideoDecoder for decompressing HEVC/H.264 frames in background
@@ -151,7 +123,6 @@ class StreamSessionViewModel: ObservableObject {
         let rect = CGRect(x: 0, y: 0, width: width, height: height)
         if let cgImage = self.cpuCIContext.createCGImage(ciImage, from: rect) {
           let image = UIImage(cgImage: cgImage)
-          self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
           if self.backgroundFrameCount <= 5 || self.backgroundFrameCount % 120 == 0 {
             NSLog("[Stream] Background frame #%d decoded and forwarded (%dx%d)",
                   self.backgroundFrameCount, width, height)
@@ -201,7 +172,6 @@ class StreamSessionViewModel: ObservableObject {
             if !self.hasReceivedFirstFrame {
               self.hasReceivedFirstFrame = true
             }
-            self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
           }
         } else {
           // In background: makeUIImage() uses VideoToolbox GPU rendering which iOS suspends.
@@ -230,7 +200,6 @@ class StreamSessionViewModel: ObservableObject {
             let rect = CGRect(x: 0, y: 0, width: width, height: height)
             if let cgImage = self.cpuCIContext.createCGImage(ciImage, from: rect) {
               let image = UIImage(cgImage: cgImage)
-              self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
             }
             self.videoDecoder.invalidateSession()
           }
@@ -261,13 +230,6 @@ class StreamSessionViewModel: ObservableObject {
       Task { @MainActor [weak self] in
         guard let self else { return }
         guard let uiImage = UIImage(data: photoData.data) else { return }
-        // An agent-initiated capture is answering a question, not something the
-        // user asked to see -- deliver it and stay out of the way.
-        if let waiting = self.pendingStillContinuation {
-          self.pendingStillContinuation = nil
-          waiting.resume(returning: uiImage)
-          return
-        }
         self.capturedPhoto = uiImage
         self.showPhotoPreview = true
       }
@@ -307,51 +269,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func stopSession() async {
-    if streamingMode == .iPhone {
-      stopIPhoneSession()
-      return
-    }
     await streamSession?.stop()
-  }
-
-  // MARK: - iPhone Camera Mode
-
-  func handleStartIPhone() async {
-    let granted = await IPhoneCameraManager.requestPermission()
-    if granted {
-      startIPhoneSession()
-    } else {
-      showError("Camera permission denied. Please grant access in Settings.")
-    }
-  }
-
-  private func startIPhoneSession() {
-    streamingMode = .iPhone
-    let camera = IPhoneCameraManager()
-    camera.onFrameCaptured = { [weak self] image in
-      Task { @MainActor [weak self] in
-        guard let self else { return }
-        self.currentVideoFrame = image
-        if !self.hasReceivedFirstFrame {
-          self.hasReceivedFirstFrame = true
-        }
-        self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
-      }
-    }
-    camera.start()
-    iPhoneCameraManager = camera
-    streamingStatus = .streaming
-    NSLog("[Stream] iPhone camera mode started")
-  }
-
-  private func stopIPhoneSession() {
-    iPhoneCameraManager?.stop()
-    iPhoneCameraManager = nil
-    currentVideoFrame = nil
-    hasReceivedFirstFrame = false
-    streamingStatus = .stopped
-    streamingMode = .glasses
-    NSLog("[Stream] iPhone camera mode stopped")
   }
 
   func dismissError() {
@@ -361,36 +279,6 @@ class StreamSessionViewModel: ObservableObject {
 
   func capturePhoto() {
     streamSession?.capturePhoto(format: .jpeg)
-  }
-
-  private var pendingStillContinuation: CheckedContinuation<UIImage?, Never>?
-
-  /// Full-resolution still for the model to read, rather than a downscaled
-  /// stream frame. Returns nil if the capture fails or the glasses never answer;
-  /// a hung continuation would leave a tool call outstanding forever.
-  func captureStillForAgent(timeout: TimeInterval = 6) async -> UIImage? {
-    // Phone mode: the converted frame is already 1920x1080 off the same sensor
-    // the preview shows, so it is the sharp still -- no photo round-trip needed.
-    if streamingMode == .iPhone { return currentVideoFrame }
-    guard let streamSession else { return nil }
-    if pendingStillContinuation != nil { return nil }
-
-    let image = await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
-      pendingStillContinuation = cont
-      guard streamSession.capturePhoto(format: .jpeg) else {
-        pendingStillContinuation = nil
-        cont.resume(returning: nil)
-        return
-      }
-      Task { @MainActor in
-        try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-        if let stale = self.pendingStillContinuation {
-          self.pendingStillContinuation = nil
-          stale.resume(returning: nil)
-        }
-      }
-    }
-    return image
   }
 
   func dismissPhotoPreview() {

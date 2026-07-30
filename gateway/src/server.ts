@@ -157,11 +157,17 @@ app.post("/v1/chat/completions", async (req, res) => {
 
   try {
     const { sessionId } = await ensureUser(userId);
+    // The agent worker (service token) blocks on its own tool timeout and
+    // relays the finished answer into the voice session -- handing IT the
+    // spawn-mode acknowledgement would make the assistant read a status
+    // message aloud. Spawn semantics are for the app's own HTTP calls.
+    const bearer = req.header("authorization")?.slice("Bearer ".length).trim();
+    const isServiceCall = !!config.serviceToken && bearer === config.serviceToken;
     // The session owns durable history; only the newest user turn is sent.
     const result = await runTurn(
       sessionId,
       lastUser,
-      config.spawnMode ? 0 : config.quickAnswerTimeoutMs,
+      isServiceCall ? 110_000 : config.spawnMode ? 0 : config.quickAnswerTimeoutMs,
       (lateText) => {
         const delivered = notifyUser(userId, lateText);
         if (!delivered) console.warn(`[turn] late result for ${userId} had no connected client`);

@@ -9,26 +9,19 @@ enum AgentBackend: String, CaseIterable {
   case selfHosted = "Self-hosted"
 }
 
-/// Which Live API architecture speaks. Natural is the native-audio model:
-/// the most lifelike voice, but slower to first audio. Fast is the
-/// half-cascade (streaming ASR + LLM + TTS), built for latency.
-enum VoiceEngine: String, CaseIterable {
-  case natural = "natural"
-  case fast = "fast"
 
-  static let defaultsKey = "voiceEngine"
+/// Which realtime model answers. The choice travels to the agent worker as
+/// room-token metadata; the phone never talks to either provider directly.
+enum IntelligenceEngine: String, CaseIterable {
+  case gemini = "gemini"
+  case openai = "openai"
+
+  static let defaultsKey = "intelligenceEngine"
 
   var label: String {
     switch self {
-    case .natural: return "Natural"
-    case .fast: return "Fast"
-    }
-  }
-
-  var modelPath: String {
-    switch self {
-    case .natural: return "models/gemini-2.5-flash-native-audio-preview-12-2025"
-    case .fast: return "models/gemini-live-2.5-flash-preview"
+    case .gemini: return "Gemini"
+    case .openai: return "OpenAI"
     }
   }
 }
@@ -82,7 +75,7 @@ final class SettingsManager {
   }
 
   var geminiSystemPrompt: String {
-    get { defaults.string(forKey: Key.geminiSystemPrompt.rawValue) ?? GeminiConfig.defaultSystemInstruction }
+    get { defaults.string(forKey: Key.geminiSystemPrompt.rawValue) ?? "" }
     set { defaults.set(newValue, forKey: Key.geminiSystemPrompt.rawValue) }
   }
 
@@ -113,13 +106,13 @@ final class SettingsManager {
 
   // MARK: - Agent backend selection
 
-  var voiceEngine: VoiceEngine {
+  var intelligenceEngine: IntelligenceEngine {
     get {
-      guard let raw = defaults.string(forKey: VoiceEngine.defaultsKey),
-            let engine = VoiceEngine(rawValue: raw) else { return .natural }
+      guard let raw = defaults.string(forKey: IntelligenceEngine.defaultsKey),
+            let engine = IntelligenceEngine(rawValue: raw) else { return .gemini }
       return engine
     }
-    set { defaults.set(newValue.rawValue, forKey: VoiceEngine.defaultsKey) }
+    set { defaults.set(newValue.rawValue, forKey: IntelligenceEngine.defaultsKey) }
   }
 
   var captureSource: CaptureSource {
