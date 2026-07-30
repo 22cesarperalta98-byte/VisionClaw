@@ -203,7 +203,11 @@ class GeminiLiveService: ObservableObject {
         "realtimeInputConfig": [
           "automaticActivityDetection": [
             "disabled": false,
-            "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+            // LOW: with the mic now open during playback (echo cancellation),
+            // HIGH treated residual echo as the user barging in -- generation
+            // was cancelled mid-reply with nobody speaking. Interruption now
+            // requires clear deliberate speech, which is the right trade.
+            "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
             // HIGH = declare end-of-turn readily. LOW + a long silence window
             // was the bulk of perceived response latency: the server sat
             // waiting to be sure the user was done. If it now answers into

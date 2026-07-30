@@ -250,25 +250,11 @@ class AudioManager {
   private func handleEchoCancelledChunk(_ chunk: Data) {
     let rms = Self.rmsOfInt16(chunk)
     if rms > 700 { lastVoiceActivityAt = Date() }
-    if let vpioUnit, vpioUnit.hasQueuedPlayback {
-      // 1000 over ~300 ms: high enough that residual echo at speaker volume
-      // and street-level ambience stay below it, long enough that only
-      // deliberate speech sustains it. (700/200 ms cut the model off on its
-      // own residual echo in the field.)
-      if rms > 1000 {
-        loudChunkStreak += 1
-        if loudChunkStreak >= 3 {
-          NSLog("[Audio] Local barge-in: flushing queued playback (rms %.0f)", rms)
-          vpioUnit.clearPlayback()
-          loudChunkStreak = 0
-          onLocalBargeIn?()
-        }
-      } else {
-        loudChunkStreak = 0
-      }
-    } else {
-      loudChunkStreak = 0
-    }
+    // Local flush DISABLED pending the LiveKit migration. Every spurious
+    // trigger -- residual echo, street noise -- chopped the playback queue
+    // mid-reply, heard as sentence-skips and speed jumps. Server-side
+    // interruption still works; energy-based flushing does not come back.
+    _ = loudChunkStreak
     onAudioCaptured?(chunk)
   }
 
