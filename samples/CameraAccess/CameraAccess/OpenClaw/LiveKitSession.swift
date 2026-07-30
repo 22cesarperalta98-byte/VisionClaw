@@ -18,10 +18,34 @@ final class LiveKitSession: ObservableObject {
 
   @Published private(set) var state: State = .disconnected
   @Published private(set) var localVideoTrack: LocalVideoTrack?
+  /// Camera-only preview while no call is active. The camera IS this app;
+  /// hanging up stops the listening, not the seeing.
+  @Published private(set) var previewTrack: LocalVideoTrack?
 
   let room = Room()
 
   var isActive: Bool { state == .connected || state == .connecting }
+
+  /// Local, unpublished camera so the screen shows the world before and
+  /// between calls. Handed off to the room on connect (one owner at a time).
+  func startPreview() async {
+    guard state == .disconnected || isFailed, previewTrack == nil else { return }
+    let track = LocalVideoTrack.createCameraTrack(
+      options: CameraCaptureOptions(position: .back))
+    do {
+      try await track.start()
+      previewTrack = track
+    } catch {
+      NSLog("[LiveKit] preview camera unavailable: %@", error.localizedDescription)
+    }
+  }
+
+  private func stopPreview() async {
+    if let track = previewTrack {
+      previewTrack = nil
+      try? await track.stop()
+    }
+  }
 
   func start() async {
     guard state == .disconnected || isFailed else { return }
@@ -30,6 +54,7 @@ final class LiveKitSession: ObservableObject {
       return
     }
     state = .connecting
+    await stopPreview()
 
     do {
       let ticket = try await fetchTicket()
@@ -53,6 +78,8 @@ final class LiveKitSession: ObservableObject {
     } catch {
       state = .failed(error.localizedDescription)
       await room.disconnect()
+      // Even a failed call leaves the user with eyes.
+      await startPreview()
     }
   }
 
@@ -60,6 +87,7 @@ final class LiveKitSession: ObservableObject {
     await room.disconnect()
     localVideoTrack = nil
     state = .disconnected
+    await startPreview()
   }
 
   private var isFailed: Bool {

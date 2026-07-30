@@ -13,10 +13,11 @@ struct LiveKitStreamView: View {
     ZStack {
       Color.black.edgesIgnoringSafeArea(.all)
 
-      if let track = session.localVideoTrack {
+      if let track = session.localVideoTrack ?? session.previewTrack {
         SwiftUIVideoView(track, layoutMode: .fill)
           .edgesIgnoringSafeArea(.all)
-      } else if case .failed(let why) = session.state {
+      }
+      if case .failed(let why) = session.state {
         VStack(spacing: 12) {
           Text("Not connected").font(.headline).foregroundStyle(.white)
           Text(why)
@@ -25,7 +26,7 @@ struct LiveKitStreamView: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 32)
         }
-      } else {
+      } else if session.state == .connecting {
         VStack(spacing: 16) {
           ProgressView().tint(.white)
           Text("Connecting")
