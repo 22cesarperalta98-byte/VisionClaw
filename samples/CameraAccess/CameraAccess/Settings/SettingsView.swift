@@ -56,10 +56,24 @@ struct SettingsView: View {
   @State private var proactiveNotificationsEnabled: Bool = true
   @State private var showResetConfirmation = false
   @State private var gatewayStatus: GatewayStatus = .checking
+  // Applies immediately rather than on Save: the root view observes the same
+  // key and swaps the capture pipeline live.
+  @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
 
   var body: some View {
     NavigationView {
       Form {
+        Section(header: Text("Camera"), footer: Text(captureSourceRaw == CaptureSource.glasses.rawValue
+          ? "Streams from your Meta glasses. Connecting them happens on the main screen."
+          : "Uses this phone's camera. The app opens straight into it, with voice ready.")) {
+          Picker("Source", selection: $captureSourceRaw) {
+            ForEach(CaptureSource.allCases, id: \.rawValue) { source in
+              Text(source.label).tag(source.rawValue)
+            }
+          }
+          .pickerStyle(.segmented)
+        }
+
         Section(header: Text("Action Agent"), footer: Text(selectedBackend == .cloud
           ? "Runs in the cloud. Nothing to install, and it keeps working when your computer is asleep."
           : "Runs on your own machine. Requires OpenClaw installed and running, and stops when that machine sleeps.")) {

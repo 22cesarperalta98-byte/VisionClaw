@@ -9,6 +9,25 @@ enum AgentBackend: String, CaseIterable {
   case selfHosted = "Self-hosted"
 }
 
+/// Where video comes from. The app is a vision assistant first -- it opens
+/// looking at the world through the phone -- and glasses are one capture
+/// source, selected here, rather than a mode the user must decide about at
+/// launch. Raw values are stored in UserDefaults under `captureSource`, which
+/// views also observe via @AppStorage so a change applies without a relaunch.
+enum CaptureSource: String, CaseIterable {
+  case iPhoneCamera = "iphone"
+  case glasses = "glasses"
+
+  static let defaultsKey = "captureSource"
+
+  var label: String {
+    switch self {
+    case .iPhoneCamera: return "iPhone Camera"
+    case .glasses: return "Glasses"
+    }
+  }
+}
+
 final class SettingsManager {
   static let shared = SettingsManager()
 
@@ -70,6 +89,15 @@ final class SettingsManager {
   }
 
   // MARK: - Agent backend selection
+
+  var captureSource: CaptureSource {
+    get {
+      guard let raw = defaults.string(forKey: CaptureSource.defaultsKey),
+            let source = CaptureSource(rawValue: raw) else { return .iPhoneCamera }
+      return source
+    }
+    set { defaults.set(newValue.rawValue, forKey: CaptureSource.defaultsKey) }
+  }
 
   /// Cloud by default: the hosted gateway needs nothing installed and keeps
   /// working with the phone away from home, which self-hosting cannot do.

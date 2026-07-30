@@ -68,15 +68,17 @@ class StreamSessionViewModel: ObservableObject {
   // WebRTC Live streaming integration
   var webrtcSessionVM: WebRTCSessionViewModel?
 
-  // The core DAT SDK StreamSession - handles all streaming operations
-  private var streamSession: StreamSession
+  // The core DAT SDK StreamSession - handles all streaming operations.
+  // nil when the Wearables SDK is unavailable (simulator, or a build without
+  // glasses); the iPhone camera path never touches it.
+  private var streamSession: StreamSession?
   // Listener tokens are used to manage DAT SDK event subscriptions
   private var stateListenerToken: AnyListenerToken?
   private var videoFrameListenerToken: AnyListenerToken?
   private var errorListenerToken: AnyListenerToken?
   private var photoDataListenerToken: AnyListenerToken?
-  private let wearables: WearablesInterface
-  private let deviceSelector: AutoDeviceSelector
+  private let wearables: WearablesInterface?
+  private let deviceSelector: AutoDeviceSelector?
   private var deviceMonitorTask: Task<Void, Never>?
   private var iPhoneCameraManager: IPhoneCameraManager?
 
@@ -110,25 +112,31 @@ class StreamSessionViewModel: ObservableObject {
   private var backgroundFrameCount = 0
   private var bgDiagLogged = false
 
-  init(wearables: WearablesInterface) {
+  init(wearables: WearablesInterface?) {
     self.wearables = wearables
-    // Let the SDK auto-select from available devices
-    self.deviceSelector = AutoDeviceSelector(wearables: wearables)
-    // 720x1280 rather than 360x640. At the low tier, printed text is a few
-    // pixels tall before JPEG compression halves it again -- the model could
-    // read a receipt's header and total but nothing smaller. Must match
-    // `selectedResolution` below; the two are set independently.
-    let config = StreamSessionConfig(
-      videoCodec: VideoCodec.raw,
-      resolution: StreamingResolution.high,
-      frameRate: 24)
-    streamSession = StreamSession(streamSessionConfig: config, deviceSelector: deviceSelector)
 
-    // Monitor device availability
-    deviceMonitorTask = Task { @MainActor in
-      for await device in deviceSelector.activeDeviceStream() {
-        self.hasActiveDevice = device != nil
+    if let wearables {
+      // Let the SDK auto-select from available devices
+      let selector = AutoDeviceSelector(wearables: wearables)
+      self.deviceSelector = selector
+      // 720x1280 rather than 360x640. At the low tier, printed text is a few
+      // pixels tall before JPEG compression halves it again -- the model could
+      // read a receipt's header and total but nothing smaller. Must match
+      // `selectedResolution` below; the two are set independently.
+      let config = StreamSessionConfig(
+        videoCodec: VideoCodec.raw,
+        resolution: StreamingResolution.high,
+        frameRate: 24)
+      streamSession = StreamSession(streamSessionConfig: config, deviceSelector: selector)
+
+      // Monitor device availability
+      deviceMonitorTask = Task { @MainActor in
+        for await device in selector.activeDeviceStream() {
+          self.hasActiveDevice = device != nil
+        }
       }
+    } else {
+      self.deviceSelector = nil
     }
 
     setupVideoDecoder()
@@ -160,7 +168,7 @@ class StreamSessionViewModel: ObservableObject {
   /// Recreate the StreamSession with the current selectedResolution.
   /// Only call when not actively streaming.
   func updateResolution(_ resolution: StreamingResolution) {
-    guard !isStreaming else { return }
+    guard !isStreaming, let deviceSelector else { return }
     selectedResolution = resolution
     let config = StreamSessionConfig(
       videoCodec: VideoCodec.raw,
@@ -172,6 +180,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   private func attachListeners() {
+    guard let streamSession else { return }
     // Subscribe to session state changes using the DAT SDK listener pattern
     stateListenerToken = streamSession.statePublisher.listen { [weak self] state in
       Task { @MainActor [weak self] in
@@ -272,6 +281,10 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func handleStartStreaming() async {
+    guard let wearables else {
+      showError("The glasses SDK is not available on this device.")
+      return
+    }
     let permission = Permission.camera
     do {
       let status = try await wearables.checkPermissionStatus(permission)
@@ -291,7 +304,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func startSession() async {
-    await streamSession.start()
+    await streamSession?.start()
   }
 
   private func showError(_ message: String) {
@@ -304,7 +317,7 @@ class StreamSessionViewModel: ObservableObject {
       stopIPhoneSession()
       return
     }
-    await streamSession.stop()
+    await streamSession?.stop()
   }
 
   // MARK: - iPhone Camera Mode
@@ -354,7 +367,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func capturePhoto() {
-    streamSession.capturePhoto(format: .jpeg)
+    streamSession?.capturePhoto(format: .jpeg)
   }
 
   private var pendingStillContinuation: CheckedContinuation<UIImage?, Never>?
@@ -363,6 +376,10 @@ class StreamSessionViewModel: ObservableObject {
   /// stream frame. Returns nil if the capture fails or the glasses never answer;
   /// a hung continuation would leave a tool call outstanding forever.
   func captureStillForAgent(timeout: TimeInterval = 6) async -> UIImage? {
+    // Phone mode: the converted frame is already 1920x1080 off the same sensor
+    // the preview shows, so it is the sharp still -- no photo round-trip needed.
+    if streamingMode == .iPhone { return currentVideoFrame }
+    guard let streamSession else { return nil }
     if pendingStillContinuation != nil { return nil }
 
     let image = await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
