@@ -38,7 +38,11 @@ final class LiveKitSession: ObservableObject {
       // Camera failure (simulator, permission denied) degrades to voice-only
       // rather than killing the call.
       do {
-        try await room.localParticipant.setCamera(enabled: true)
+        // A video-call SDK defaults to the selfie camera; this app is a pair
+        // of eyes on the world, so it opens on the back camera.
+        try await room.localParticipant.setCamera(
+          enabled: true,
+          captureOptions: CameraCaptureOptions(position: .back))
         localVideoTrack = room.localParticipant.localVideoTracks
           .compactMap { $0.track as? LocalVideoTrack }
           .first
