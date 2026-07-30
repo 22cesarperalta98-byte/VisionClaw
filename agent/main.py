@@ -85,7 +85,7 @@ def build_llm(engine: str):
             logger.warning("openai engine requested but OPENAI_API_KEY unset; using gemini")
         else:
             return openai.realtime.RealtimeModel(
-                model=os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
+                model=os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1"),
             )
     return google.beta.realtime.RealtimeModel(
         model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
