@@ -226,18 +226,26 @@ class AudioManager {
   /// of the model's reply -- the latency a person actually feels.
   var onVoiceToVoiceLatency: ((TimeInterval) -> Void)?
   private var lastVoiceActivityAt: Date?
+  /// Fired when the local detector cuts playback. Surfaced in the UI so a
+  /// self-interruption in the field can be attributed: marker shown = this
+  /// detector fired (echo/noise over threshold); no marker = server side.
+  var onLocalBargeIn: (() -> Void)?
 
   private func handleEchoCancelledChunk(_ chunk: Data) {
     let rms = Self.rmsOfInt16(chunk)
     if rms > 700 { lastVoiceActivityAt = Date() }
     if let vpioUnit, vpioUnit.hasQueuedPlayback {
-      if rms > 700 {
+      // 1000 over ~300 ms: high enough that residual echo at speaker volume
+      // and street-level ambience stay below it, long enough that only
+      // deliberate speech sustains it. (700/200 ms cut the model off on its
+      // own residual echo in the field.)
+      if rms > 1000 {
         loudChunkStreak += 1
-        // Chunks are ~100 ms; two in a row is deliberate speech, not a cough.
-        if loudChunkStreak >= 2 {
-          NSLog("[Audio] Local barge-in: flushing queued playback")
+        if loudChunkStreak >= 3 {
+          NSLog("[Audio] Local barge-in: flushing queued playback (rms %.0f)", rms)
           vpioUnit.clearPlayback()
           loudChunkStreak = 0
+          onLocalBargeIn?()
         }
       } else {
         loudChunkStreak = 0

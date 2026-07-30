@@ -12,6 +12,7 @@ class GeminiSessionViewModel: ObservableObject {
   @Published var toolCallStatus: ToolCallStatus = .idle
   @Published var openClawConnectionState: OpenClawConnectionState = .notConfigured
   @Published var lastVoiceToVoiceMs: Int?
+  @Published var localBargeInFlash = false
   private let geminiService = GeminiLiveService()
   private let openClawBridge = OpenClawBridge()
   private var toolCallRouter: ToolCallRouter?
@@ -55,6 +56,14 @@ class GeminiSessionViewModel: ObservableObject {
 
     audioManager.onVoiceToVoiceLatency = { [weak self] seconds in
       Task { @MainActor in self?.lastVoiceToVoiceMs = Int(seconds * 1000) }
+    }
+
+    audioManager.onLocalBargeIn = { [weak self] in
+      Task { @MainActor in
+        self?.localBargeInFlash = true
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        self?.localBargeInFlash = false
+      }
     }
 
     geminiService.onInterrupted = { [weak self] in
