@@ -222,9 +222,16 @@ class AudioManager {
   // playback itself leaks into the mic and would self-trigger.
   private var loudChunkStreak = 0
 
+  /// Fired with seconds from the user's last voiced audio to the first audio
+  /// of the model's reply -- the latency a person actually feels.
+  var onVoiceToVoiceLatency: ((TimeInterval) -> Void)?
+  private var lastVoiceActivityAt: Date?
+
   private func handleEchoCancelledChunk(_ chunk: Data) {
+    let rms = Self.rmsOfInt16(chunk)
+    if rms > 700 { lastVoiceActivityAt = Date() }
     if let vpioUnit, vpioUnit.hasQueuedPlayback {
-      if Self.rmsOfInt16(chunk) > 700 {
+      if rms > 700 {
         loudChunkStreak += 1
         // Chunks are ~100 ms; two in a row is deliberate speech, not a cough.
         if loudChunkStreak >= 2 {
@@ -254,6 +261,14 @@ class AudioManager {
   func playAudio(data: Data) {
     guard isCapturing, !data.isEmpty else { return }
     if let vpioUnit {
+      // First chunk of a reply while the queue is drained: measure from the
+      // user's last voiced audio. This is the number to tune, not the feel.
+      if !vpioUnit.hasQueuedPlayback, let spokeAt = lastVoiceActivityAt {
+        let latency = Date().timeIntervalSince(spokeAt)
+        lastVoiceActivityAt = nil
+        NSLog("[Audio] Voice-to-voice: %.0f ms", latency * 1000)
+        onVoiceToVoiceLatency?(latency)
+      }
       vpioUnit.enqueuePlayback(data)
       return
     }

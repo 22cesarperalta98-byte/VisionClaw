@@ -58,6 +58,7 @@ struct SettingsView: View {
   // Applies immediately rather than on Save: the root view observes the same
   // key and swaps the capture pipeline live.
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
+  @AppStorage(VoiceEngine.defaultsKey) private var voiceEngineRaw = VoiceEngine.natural.rawValue
 
   var body: some View {
     NavigationView {
@@ -68,6 +69,17 @@ struct SettingsView: View {
           Picker("Source", selection: $captureSourceRaw) {
             ForEach(CaptureSource.allCases, id: \.rawValue) { source in
               Text(source.label).tag(source.rawValue)
+            }
+          }
+          .pickerStyle(.segmented)
+        }
+
+        Section(header: Text("Voice"), footer: Text(voiceEngineRaw == VoiceEngine.fast.rawValue
+          ? "Fast: lower response latency, standard voice. Takes effect the next time voice connects."
+          : "Natural: the most lifelike voice, slower to start speaking. Takes effect the next time voice connects.")) {
+          Picker("Engine", selection: $voiceEngineRaw) {
+            ForEach(VoiceEngine.allCases, id: \.rawValue) { engine in
+              Text(engine.label).tag(engine.rawValue)
             }
           }
           .pickerStyle(.segmented)

@@ -9,6 +9,30 @@ enum AgentBackend: String, CaseIterable {
   case selfHosted = "Self-hosted"
 }
 
+/// Which Live API architecture speaks. Natural is the native-audio model:
+/// the most lifelike voice, but slower to first audio. Fast is the
+/// half-cascade (streaming ASR + LLM + TTS), built for latency.
+enum VoiceEngine: String, CaseIterable {
+  case natural = "natural"
+  case fast = "fast"
+
+  static let defaultsKey = "voiceEngine"
+
+  var label: String {
+    switch self {
+    case .natural: return "Natural"
+    case .fast: return "Fast"
+    }
+  }
+
+  var modelPath: String {
+    switch self {
+    case .natural: return "models/gemini-2.5-flash-native-audio-preview-12-2025"
+    case .fast: return "models/gemini-live-2.5-flash-preview"
+    }
+  }
+}
+
 /// Where video comes from. The app is a vision assistant first -- it opens
 /// looking at the world through the phone -- and glasses are one capture
 /// source, selected here, rather than a mode the user must decide about at
@@ -88,6 +112,15 @@ final class SettingsManager {
   }
 
   // MARK: - Agent backend selection
+
+  var voiceEngine: VoiceEngine {
+    get {
+      guard let raw = defaults.string(forKey: VoiceEngine.defaultsKey),
+            let engine = VoiceEngine(rawValue: raw) else { return .natural }
+      return engine
+    }
+    set { defaults.set(newValue.rawValue, forKey: VoiceEngine.defaultsKey) }
+  }
 
   var captureSource: CaptureSource {
     get {

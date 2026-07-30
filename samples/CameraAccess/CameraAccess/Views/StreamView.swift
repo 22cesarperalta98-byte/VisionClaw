@@ -32,6 +32,18 @@ struct StreamView: View {
       // without a gear here Settings is unreachable.
       VStack {
         HStack {
+          // Measured voice-to-voice latency: last utterance end to first reply
+          // audio. On screen because latency tuning is happening in the field,
+          // far from Xcode.
+          if let ms = geminiVM.lastVoiceToVoiceMs {
+            Text(String(format: "%.1fs", Double(ms) / 1000))
+              .font(.system(.footnote, design: .monospaced).weight(.semibold))
+              .foregroundStyle(.white.opacity(0.7))
+              .padding(.horizontal, 10)
+              .padding(.vertical, 6)
+              .background(.black.opacity(0.35), in: Capsule())
+              .padding(.leading, 16)
+          }
           Spacer()
           Button { showSettings = true } label: {
             Image(systemName: "gearshape.fill")

@@ -2,7 +2,9 @@ import Foundation
 
 enum GeminiConfig {
   static let websocketBaseURL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
-  static let model = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+  static var model: String { SettingsManager.shared.voiceEngine.modelPath }
+  /// thinkingConfig is a native-audio feature; the half-cascade model rejects it.
+  static var supportsThinkingConfig: Bool { model.contains("native-audio") }
 
   static let inputAudioSampleRate: Double = 16000
   static let outputAudioSampleRate: Double = 24000

@@ -11,6 +11,7 @@ class GeminiSessionViewModel: ObservableObject {
   @Published var aiTranscript: String = ""
   @Published var toolCallStatus: ToolCallStatus = .idle
   @Published var openClawConnectionState: OpenClawConnectionState = .notConfigured
+  @Published var lastVoiceToVoiceMs: Int?
   private let geminiService = GeminiLiveService()
   private let openClawBridge = OpenClawBridge()
   private var toolCallRouter: ToolCallRouter?
@@ -50,6 +51,10 @@ class GeminiSessionViewModel: ObservableObject {
 
     geminiService.onAudioReceived = { [weak self] data in
       self?.audioManager.playAudio(data: data)
+    }
+
+    audioManager.onVoiceToVoiceLatency = { [weak self] seconds in
+      Task { @MainActor in self?.lastVoiceToVoiceMs = Int(seconds * 1000) }
     }
 
     geminiService.onInterrupted = { [weak self] in

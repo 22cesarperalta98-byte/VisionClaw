@@ -182,15 +182,14 @@ class GeminiLiveService: ObservableObject {
   }
 
   private func sendSetupMessage() {
+    var generationConfig: [String: Any] = ["responseModalities": ["AUDIO"]]
+    if GeminiConfig.supportsThinkingConfig {
+      generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+    }
     let setup: [String: Any] = [
       "setup": [
         "model": GeminiConfig.model,
-        "generationConfig": [
-          "responseModalities": ["AUDIO"],
-          "thinkingConfig": [
-            "thinkingBudget": 0
-          ]
-        ],
+        "generationConfig": generationConfig,
         "systemInstruction": [
           "parts": [
             ["text": GeminiConfig.systemInstruction]
