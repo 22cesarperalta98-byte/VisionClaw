@@ -87,10 +87,9 @@ struct StreamView: View {
           .foregroundColor(.white)
       }
 
-      // Gemini status overlay (top) + speaking indicator
+      // Transcripts + speaking indicator
       if geminiVM.isGeminiActive {
         VStack {
-          GeminiStatusBar(geminiVM: geminiVM)
           Spacer()
 
           VStack(spacing: 8) {
@@ -192,19 +191,49 @@ struct ControlsView: View {
         }
       }
 
-      // Gemini AI button
-      CircleButton(
-        icon: geminiVM.isGeminiActive ? "waveform.circle.fill" : "waveform.circle",
-        text: "AI"
-      ) {
-        Task {
-          if geminiVM.isGeminiActive {
-            geminiVM.stopSession()
-          } else {
-            await geminiVM.startSession()
-          }
+      // One control, call semantics: connected or not. Which services sit
+      // behind the call is plumbing the user should never have to read.
+      CallButton(geminiVM: geminiVM)
+    }
+  }
+}
+
+
+/// The assistant as a call: green to connect, red to hang up, spinner while
+/// dialing. Modeled on how consumer voice apps present it -- one icon carries
+/// the whole connection story, and the per-service detail stays in Settings.
+struct CallButton: View {
+  @ObservedObject var geminiVM: GeminiSessionViewModel
+
+  private var isConnecting: Bool {
+    if case .connecting = geminiVM.connectionState { return true }
+    if case .settingUp = geminiVM.connectionState { return true }
+    return false
+  }
+
+  var body: some View {
+    Button {
+      Task {
+        if geminiVM.isGeminiActive {
+          geminiVM.stopSession()
+        } else {
+          await geminiVM.startSession()
+        }
+      }
+    } label: {
+      ZStack {
+        Circle()
+          .fill(geminiVM.isGeminiActive ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
+          .frame(width: 64, height: 64)
+        if isConnecting {
+          ProgressView().tint(.white)
+        } else {
+          Image(systemName: geminiVM.isGeminiActive ? "phone.down.fill" : "phone.fill")
+            .font(.system(size: 24, weight: .semibold))
+            .foregroundStyle(.white)
         }
       }
     }
+    .disabled(isConnecting)
   }
 }
