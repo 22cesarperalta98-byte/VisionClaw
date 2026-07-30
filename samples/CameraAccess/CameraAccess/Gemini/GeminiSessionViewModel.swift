@@ -36,10 +36,13 @@ class GeminiSessionViewModel: ObservableObject {
     audioManager.onAudioCaptured = { [weak self] data in
       guard let self else { return }
       Task { @MainActor in
-        // Mute mic while model speaks when speaker is on the phone
-        // (loudspeaker + co-located mic overwhelms iOS echo cancellation)
+        // With echo cancellation running, the mic stays open while the model
+        // speaks -- that is what lets the user interrupt it. Muting is only
+        // the fallback when voice processing could not be enabled, because a
+        // loudspeaker next to an unprocessed mic feeds the model its own voice.
         let speakerOnPhone = self.streamingMode == .iPhone || SettingsManager.shared.speakerOutputEnabled
-        if speakerOnPhone && self.geminiService.isModelSpeaking { return }
+        if speakerOnPhone && !self.audioManager.echoCancellationActive
+          && self.geminiService.isModelSpeaking { return }
         self.geminiService.sendAudio(data: data)
       }
     }
