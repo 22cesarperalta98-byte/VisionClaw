@@ -117,11 +117,11 @@ async function probeMcp(mcpUrl: string, accessToken: string): Promise<{ ok: bool
 
 export function registerConnectRoutes(
   app: Express,
-  userFromRequest: (header: string | undefined) => string | null,
+  userFromRequest: (req: Request, explicitToken?: string) => string | null,
 ): void {
   // What's connectable and what this user has already connected.
   app.get("/apps", async (req: Request, res: Response) => {
-    const userId = userFromRequest(req.header("authorization"));
+    const userId = userFromRequest(req);
     if (!userId) {
       res.status(401).json({ error: { message: "invalid or missing gateway token" } });
       return;
@@ -151,7 +151,7 @@ export function registerConnectRoutes(
   // sheet does not need to set headers.
   app.get("/connect/:appId", (req: Request, res: Response) => {
     const token = String(req.query.token ?? "");
-    const userId = userFromRequest(token ? `Bearer ${token}` : undefined);
+    const userId = userFromRequest(req, token || undefined);
     if (!userId) {
       res.status(401).send(page("Not signed in", "Open this from the VisionClaw app."));
       return;

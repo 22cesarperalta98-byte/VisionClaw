@@ -1,22 +1,39 @@
-"""VisionClaw voice agent: LiveKit room <-> Gemini Live, tools via the gateway.
+"""VisionClaw voice agent: LiveKit room <-> realtime model, tools via the gateway.
 
 The phone publishes mic + camera into a LiveKit room and this worker joins as
-the assistant: the google plugin drives Gemini Live (audio and video natively),
-and the framework owns everything the direct-connection client had to hand-roll
--- echo cancellation lives in WebRTC on the phone, interruption is playback-
-position-aware here, VAD and turn-taking are configurable in one place.
+the assistant. Which brain answers is the user's choice, carried in their
+participant metadata: Gemini Live (native audio+video) or OpenAI Realtime
+(gpt-realtime-2; video frames arrive as image items). The framework owns what
+the direct-connection client had to hand-roll -- echo cancellation lives in
+WebRTC on the phone, interruption is playback-position-aware here.
+
+Per-user identity: the room token's identity IS the gateway userId, so tool
+calls hit the gateway with the service token plus X-User-Id, landing in that
+user's own CMA session, vault and calendar.
 
 Env (Fly secrets): LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
-GOOGLE_API_KEY, GATEWAY_URL, plus GEMINI_MODEL to swap voice engines.
+GOOGLE_API_KEY, OPENAI_API_KEY (optional; absent disables the openai engine),
+GATEWAY_URL, GATEWAY_SERVICE_TOKEN. Models via GEMINI_MODEL /
+OPENAI_REALTIME_MODEL.
 """
 
 import json
 import logging
 import os
+from dataclasses import dataclass
 
 import aiohttp
-from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions, cli, function_tool
-from livekit.plugins import google
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    JobContext,
+    RoomInputOptions,
+    RunContext,
+    WorkerOptions,
+    cli,
+    function_tool,
+)
+from livekit.plugins import google, openai
 
 logger = logging.getLogger("visionclaw-agent")
 
@@ -31,8 +48,13 @@ acknowledgment BEFORE calling it, never call it silently. Results may arrive as 
 relay them as the answer to what was asked, not as a notification."""
 
 
+@dataclass
+class Userdata:
+    user_id: str
+
+
 @function_tool
-async def execute(task: str) -> str:
+async def execute(ctx: RunContext[Userdata], task: str) -> str:
     """Delegate an action or lookup to the user's personal action agent: sending
     messages, web search, managing lists and reminders, Google Calendar, research,
     notes, smart home control. Describe the task completely, with names, content
@@ -42,7 +64,10 @@ async def execute(task: str) -> str:
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{gateway}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-User-Id": ctx.userdata.user_id,
+            },
             json={"messages": [{"role": "user", "content": task}]},
             timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
@@ -54,14 +79,38 @@ async def execute(task: str) -> str:
         return "The action agent returned an unexpected response."
 
 
+def build_llm(engine: str):
+    if engine == "openai":
+        if not os.environ.get("OPENAI_API_KEY"):
+            logger.warning("openai engine requested but OPENAI_API_KEY unset; using gemini")
+        else:
+            return openai.realtime.RealtimeModel(
+                model=os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
+            )
+    return google.beta.realtime.RealtimeModel(
+        model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
+        voice=os.environ.get("GEMINI_VOICE", "Puck"),
+    )
+
+
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
+    # The phone's room token carries identity (= gateway userId) and metadata
+    # (= engine choice from Settings). Both decided client-side, minted
+    # server-side, read here.
+    participant = await ctx.wait_for_participant()
+    try:
+        meta = json.loads(participant.metadata) if participant.metadata else {}
+    except json.JSONDecodeError:
+        meta = {}
+    engine = meta.get("engine", "gemini")
+    user_id = participant.identity or "demo"
+    logger.info("session start: user=%s engine=%s", user_id, engine)
+
     session = AgentSession(
-        llm=google.beta.realtime.RealtimeModel(
-            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
-            voice=os.environ.get("GEMINI_VOICE", "Puck"),
-        ),
+        llm=build_llm(engine),
+        userdata=Userdata(user_id=user_id),
     )
 
     await session.start(

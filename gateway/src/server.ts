@@ -33,9 +33,20 @@ const SPAWN_ACK =
 
 // ---------- auth ----------
 
-function userFromRequest(header: string | undefined): string | null {
-  if (!header?.startsWith("Bearer ")) return null;
-  return config.tokens.get(header.slice("Bearer ".length).trim()) ?? null;
+function userFromRequest(req: express.Request, explicitToken?: string): string | null {
+  let token = explicitToken?.trim();
+  if (!token) {
+    const header = req.header("authorization");
+    if (!header?.startsWith("Bearer ")) return null;
+    token = header.slice("Bearer ".length).trim();
+  }
+  // The agent worker authenticates users upstream (LiveKit room identity), so
+  // it holds one service credential and names the user per request.
+  if (config.serviceToken && token === config.serviceToken) {
+    const impersonated = req.header("x-user-id")?.trim();
+    return impersonated || null;
+  }
+  return config.tokens.get(token) ?? null;
 }
 
 // ---------- app connections (OAuth -> vault) ----------
@@ -55,7 +66,7 @@ app.get("/health", (_req, res) => {
 
 // The app's delegateTask() posts OpenAI-style chat completions here.
 app.post("/v1/chat/completions", async (req, res) => {
-  const userId = userFromRequest(req.header("authorization"));
+  const userId = userFromRequest(req);
   if (!userId) {
     res.status(401).json({ error: { message: "invalid or missing gateway token" } });
     return;
@@ -187,7 +198,7 @@ app.post("/v1/chat/completions", async (req, res) => {
 // room JWT. The LiveKit API secret never leaves the server, and each user gets
 // their own room -- the same isolation boundary as their CMA session.
 app.post("/livekit-token", async (req, res) => {
-  const userId = userFromRequest(req.header("authorization"));
+  const userId = userFromRequest(req);
   if (!userId) {
     res.status(401).json({ error: { message: "invalid or missing gateway token" } });
     return;
@@ -198,9 +209,13 @@ app.post("/livekit-token", async (req, res) => {
     return;
   }
   const { AccessToken } = await import("livekit-server-sdk");
+  // The engine choice (gemini | openai) rides as participant metadata; the
+  // worker reads it when the user joins and picks the realtime model.
+  const engine = req.body?.engine === "openai" ? "openai" : "gemini";
   const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
     identity: userId,
     ttl: "15m",
+    metadata: JSON.stringify({ engine }),
   });
   const room = `vc-${userId}`;
   at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true });
@@ -209,7 +224,7 @@ app.post("/livekit-token", async (req, res) => {
 
 // Task history for the app's Recent Tasks view.
 app.get("/tasks", async (req, res) => {
-  const userId = userFromRequest(req.header("authorization"));
+  const userId = userFromRequest(req);
   if (!userId) {
     res.status(401).json({ error: { message: "invalid or missing gateway token" } });
     return;
@@ -226,7 +241,7 @@ app.get("/tasks", async (req, res) => {
 
 // Voice-session context handoff (summaries, what the user is looking at).
 app.post("/context", async (req, res) => {
-  const userId = userFromRequest(req.header("authorization"));
+  const userId = userFromRequest(req);
   if (!userId) {
     res.status(401).json({ error: { message: "invalid or missing gateway token" } });
     return;

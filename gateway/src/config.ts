@@ -17,6 +17,12 @@ export interface GatewayConfig {
    * deferred branch to land on the wrong side of.
    */
   spawnMode: boolean;
+  /**
+   * Trusted backend credential: a caller presenting this token plus an
+   * X-User-Id header acts as that user. Held only by the LiveKit agent worker,
+   * which authenticates users itself via room-token identity.
+   */
+  serviceToken?: string;
 }
 
 function parseTokens(raw: string | undefined): Map<string, string> {
@@ -37,6 +43,7 @@ export const config: GatewayConfig = {
   agentEffort: (process.env.AGENT_EFFORT as GatewayConfig["agentEffort"]) ?? "medium",
   quickAnswerTimeoutMs: Number(process.env.QUICK_ANSWER_TIMEOUT_MS ?? 30_000),
   spawnMode: process.env.SPAWN_MODE !== "false",
+  serviceToken: process.env.GATEWAY_SERVICE_TOKEN || undefined,
 };
 
 if (config.tokens.size === 0) {
