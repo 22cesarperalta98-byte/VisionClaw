@@ -205,8 +205,12 @@ class GeminiLiveService: ObservableObject {
           "automaticActivityDetection": [
             "disabled": false,
             "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
-            "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
-            "silenceDurationMs": 500,
+            // HIGH = declare end-of-turn readily. LOW + a long silence window
+            // was the bulk of perceived response latency: the server sat
+            // waiting to be sure the user was done. If it now answers into
+            // mid-sentence thinking pauses, raise silenceDurationMs first.
+            "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH",
+            "silenceDurationMs": 400,
             "prefixPaddingMs": 40
           ],
           "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
