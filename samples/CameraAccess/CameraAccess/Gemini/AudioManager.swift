@@ -66,26 +66,13 @@ class AudioManager {
     setupAppLifecycleObservers()
   }
 
-  /// True when the IO unit is running FaceTime-grade echo cancellation. The
-  /// mic can then stay open while the model speaks -- its own voice is
-  /// subtracted from the input using the engine's playback as the reference
-  /// signal -- which is what makes barge-in possible on the phone speaker.
-  private(set) var echoCancellationActive = false
-
   func startCapture() throws {
     guard !isCapturing else { return }
 
-    // Must be set before wiring and taps: it swaps the IO unit and changes the
-    // input format. Playback runs through this same engine, so the canceller
-    // has the exact reference signal.
-    do {
-      try audioEngine.inputNode.setVoiceProcessingEnabled(true)
-      echoCancellationActive = true
-    } catch {
-      echoCancellationActive = false
-      NSLog("[Audio] Voice processing unavailable, falling back to mic muting: %@", error.localizedDescription)
-    }
-
+    // Deliberately NO setVoiceProcessingEnabled here: swapping the IO unit to
+    // VPIO silenced capture entirely on the iOS 27 beta (format/route change).
+    // The session already runs in .voiceChat mode, which applies the OS-level
+    // echo tuning, and the Live API's server-side VAD does the turn-taking.
     audioEngine.attach(playerNode)
     let playerFormat = AVAudioFormat(
       commonFormat: .pcmFormatFloat32,
