@@ -36,10 +36,14 @@ class GeminiSessionViewModel: ObservableObject {
     audioManager.onAudioCaptured = { [weak self] data in
       guard let self else { return }
       Task { @MainActor in
-        // No client-side gating: the mic streams continuously and the Live
-        // API's server-side VAD owns turn-taking and interruption. If the
-        // model starts cutting itself off from speaker echo, the lever is
-        // startOfSpeechSensitivity in the session config, not muting here.
+        // With hardware echo cancellation the mic streams continuously and the
+        // server's VAD owns turn-taking -- that is what makes interruption
+        // work. Without it (VPIO unsupported or failed), the raw loudspeaker
+        // feed reaches the model as its own voice, so fall back to half-duplex:
+        // mute while it speaks. Worse than barge-in, but never a feedback loop.
+        let speakerOnPhone = self.streamingMode == .iPhone || SettingsManager.shared.speakerOutputEnabled
+        if speakerOnPhone && !self.audioManager.echoCancellationActive
+          && self.geminiService.isModelSpeaking { return }
         self.geminiService.sendAudio(data: data)
       }
     }

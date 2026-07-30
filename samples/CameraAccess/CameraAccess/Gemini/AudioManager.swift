@@ -5,8 +5,20 @@ import UIKit
 class AudioManager {
   var onAudioCaptured: ((Data) -> Void)?
 
-  private let audioEngine = AVAudioEngine()
-  private let playerNode = AVAudioPlayerNode()
+  // Rebuilt fresh on every capture start: enabling voice processing swaps the
+  // IO unit, and doing that to a long-lived engine -- or stopping and
+  // restarting one -- is how the input node ends up reporting 0 Hz and the tap
+  // never fires. A new engine each time makes the setup order deterministic.
+  private var audioEngine = AVAudioEngine()
+  private var playerNode = AVAudioPlayerNode()
+
+  /// True when hardware echo cancellation (VPIO) is running: the mic can stay
+  /// open while the model speaks, which is what makes interruption possible.
+  /// False on devices/OS states where VPIO fails; the caller then falls back
+  /// to half-duplex muting -- worse than barge-in, but never deaf.
+  private(set) var echoCancellationActive = false
+
+  private enum AudioEngineError: Error { case zeroSampleRate }
   private var isCapturing = false
   private var wasCapturingBeforeInterruption = false
   private var useIPhoneMode = false
@@ -69,26 +81,55 @@ class AudioManager {
   func startCapture() throws {
     guard !isCapturing else { return }
 
-    // Deliberately NO setVoiceProcessingEnabled here: swapping the IO unit to
-    // VPIO silenced capture entirely on the iOS 27 beta (format/route change).
-    // The session already runs in .voiceChat mode, which applies the OS-level
-    // echo tuning, and the Live API's server-side VAD does the turn-taking.
-    audioEngine.attach(playerNode)
+    // Try full-duplex (echo-cancelled) first; if the IO swap misbehaves --
+    // beta OSes, unsupported hardware, 0 Hz formats -- rebuild without it.
+    var lastError: Error?
+    for useVoiceProcessing in [true, false] {
+      do {
+        try startEngine(voiceProcessing: useVoiceProcessing)
+        echoCancellationActive = useVoiceProcessing
+        isCapturing = true
+        NSLog("[Audio] Capture running, echo cancellation: %@", useVoiceProcessing ? "ON" : "OFF (half-duplex fallback)")
+        return
+      } catch {
+        lastError = error
+        NSLog("[Audio] Engine start failed (voiceProcessing=%d): %@", useVoiceProcessing ? 1 : 0, error.localizedDescription)
+      }
+    }
+    throw lastError ?? AudioEngineError.zeroSampleRate
+  }
+
+  private func startEngine(voiceProcessing: Bool) throws {
+    let engine = AVAudioEngine()
+    let player = AVAudioPlayerNode()
+
+    if voiceProcessing {
+      // Before any wiring or format reads: this swaps the whole IO unit.
+      try engine.outputNode.setVoiceProcessingEnabled(true)
+    }
+
+    engine.attach(player)
     let playerFormat = AVAudioFormat(
       commonFormat: .pcmFormatFloat32,
       sampleRate: GeminiConfig.outputAudioSampleRate,
       channels: GeminiConfig.audioChannels,
       interleaved: false
     )!
-    audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: playerFormat)
+    engine.connect(player, to: engine.mainMixerNode, format: playerFormat)
 
-    let inputNode = audioEngine.inputNode
+    let inputNode = engine.inputNode
     let inputNativeFormat = inputNode.outputFormat(forBus: 0)
 
     NSLog("[Audio] Native input format: %@ sampleRate=%.0f channels=%d",
           inputNativeFormat.commonFormat == .pcmFormatFloat32 ? "Float32" :
           inputNativeFormat.commonFormat == .pcmFormatInt16 ? "Int16" : "Other",
           inputNativeFormat.sampleRate, inputNativeFormat.channelCount)
+
+    // The known VPIO failure mode: a dead IO that reports 0 Hz and never
+    // delivers a buffer. Throwing here retries without voice processing.
+    guard inputNativeFormat.sampleRate > 0, inputNativeFormat.channelCount > 0 else {
+      throw AudioEngineError.zeroSampleRate
+    }
 
     // Always tap in native format (Float32) and convert to Int16 PCM manually.
     // AVAudioEngine taps don't reliably convert between sample formats inline.
@@ -148,9 +189,16 @@ class AudioManager {
       }
     }
 
-    try audioEngine.start()
-    playerNode.play()
-    isCapturing = true
+    do {
+      try engine.start()
+    } catch {
+      inputNode.removeTap(onBus: 0)
+      throw error
+    }
+    player.play()
+
+    audioEngine = engine
+    playerNode = player
   }
 
   func playAudio(data: Data) {
