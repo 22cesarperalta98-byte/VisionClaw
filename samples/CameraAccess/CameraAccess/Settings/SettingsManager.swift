@@ -43,7 +43,6 @@ final class SettingsManager {
     case cloudGatewayURL
     case cloudGatewayToken
     case geminiSystemPrompt
-    case webrtcSignalingURL
     case speakerOutputEnabled
     case videoStreamingEnabled
     case proactiveNotificationsEnabled
@@ -121,13 +120,6 @@ final class SettingsManager {
     set { defaults.set(newValue, forKey: Key.cloudGatewayToken.rawValue) }
   }
 
-  // MARK: - WebRTC
-
-  var webrtcSignalingURL: String {
-    get { defaults.string(forKey: Key.webrtcSignalingURL.rawValue) ?? Secrets.webrtcSignalingURL }
-    set { defaults.set(newValue, forKey: Key.webrtcSignalingURL.rawValue) }
-  }
-
   // MARK: - Audio
 
   var speakerOutputEnabled: Bool {
@@ -154,7 +146,7 @@ final class SettingsManager {
   func resetAll() {
     for key in [Key.geminiAPIKey, .geminiSystemPrompt, .agentBackend, .openClawHost, .openClawPort,
                 .openClawHookToken, .openClawGatewayToken, .cloudGatewayURL, .cloudGatewayToken,
-                .webrtcSignalingURL, .speakerOutputEnabled, .videoStreamingEnabled,
+                .speakerOutputEnabled, .videoStreamingEnabled,
                 .proactiveNotificationsEnabled] {
       defaults.removeObject(forKey: key.rawValue)
     }

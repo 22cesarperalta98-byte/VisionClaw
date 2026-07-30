@@ -24,7 +24,6 @@ struct StreamSessionView: View {
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
   @StateObject private var geminiVM = GeminiSessionViewModel()
-  @StateObject private var webrtcVM = WebRTCSessionViewModel()
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
   @State private var showSettings = false
 
@@ -42,7 +41,7 @@ struct StreamSessionView: View {
     ZStack {
       if viewModel.isStreaming {
         // Full-screen video view with streaming controls
-        StreamView(viewModel: viewModel, geminiVM: geminiVM, webrtcVM: webrtcVM)
+        StreamView(viewModel: viewModel, geminiVM: geminiVM)
       } else if captureSource == .glasses, let wearablesViewModel {
         if wearablesViewModel.registrationState == .registered || wearablesViewModel.hasMockDevice {
           // Glasses connected: pre-streaming view with resolution + start
@@ -62,7 +61,6 @@ struct StreamSessionView: View {
       geminiVM.attachCamera { [weak viewModel] in
         await viewModel?.captureStillForAgent()
       }
-      viewModel.webrtcSessionVM = webrtcVM
       geminiVM.streamingMode = viewModel.streamingMode
       await autoStartIfNeeded()
     }

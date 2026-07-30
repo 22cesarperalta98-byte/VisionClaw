@@ -63,7 +63,7 @@ class GeminiSessionViewModel: ObservableObject {
     geminiService.onInputTranscription = { [weak self] text in
       guard let self else { return }
       Task { @MainActor in
-        self.userTranscript += text
+        self.userTranscript = Self.tidyCJK(self.userTranscript + text)
         self.aiTranscript = ""
       }
     }
@@ -71,7 +71,7 @@ class GeminiSessionViewModel: ObservableObject {
     geminiService.onOutputTranscription = { [weak self] text in
       guard let self else { return }
       Task { @MainActor in
-        self.aiTranscript += text
+        self.aiTranscript = Self.tidyCJK(self.aiTranscript + text)
       }
     }
 
@@ -176,6 +176,18 @@ class GeminiSessionViewModel: ObservableObject {
       }
       eventClient.connect()
     }
+  }
+
+  /// Live transcription arrives in word-segmented chunks with separator
+  /// spaces, ASR-style. Between Latin words that is correct; between CJK
+  /// characters it renders as arbitrary gaps mid-sentence. Collapse spaces
+  /// whose both neighbors are CJK (or CJK punctuation), keep the rest --
+  /// "Hypervolt Go 3" stays spaced, "你手里 拿的" does not.
+  static func tidyCJK(_ text: String) -> String {
+    text.replacingOccurrences(
+      of: "(?<=[\\p{Han}\\u3000-\\u303F\\uFF00-\\uFF65])\\s+(?=[\\p{Han}\\u3000-\\u303F\\uFF00-\\uFF65])",
+      with: "",
+      options: .regularExpression)
   }
 
   func stopSession() {

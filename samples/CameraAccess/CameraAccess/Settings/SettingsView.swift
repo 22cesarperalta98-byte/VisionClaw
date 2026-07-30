@@ -50,7 +50,6 @@ struct SettingsView: View {
   @State private var openClawHookToken: String = ""
   @State private var openClawGatewayToken: String = ""
   @State private var geminiSystemPrompt: String = ""
-  @State private var webrtcSignalingURL: String = ""
   @State private var speakerOutputEnabled: Bool = false
   @State private var videoStreamingEnabled: Bool = true
   @State private var proactiveNotificationsEnabled: Bool = true
@@ -175,19 +174,6 @@ struct SettingsView: View {
         }
         }
 
-        Section(header: Text("WebRTC")) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Signaling URL")
-              .font(.caption)
-              .foregroundColor(.secondary)
-            TextField("wss://your-server.example.com", text: $webrtcSignalingURL)
-              .autocapitalization(.none)
-              .disableAutocorrection(true)
-              .keyboardType(.URL)
-              .font(.system(.body, design: .monospaced))
-          }
-        }
-
         Section(header: Text("Audio"), footer: Text("Route audio output to the iPhone speaker instead of glasses. Useful for demos where others need to hear.")) {
           Toggle("Speaker Output", isOn: $speakerOutputEnabled)
         }
@@ -300,7 +286,6 @@ struct SettingsView: View {
     openClawPort = String(settings.openClawPort)
     openClawHookToken = settings.openClawHookToken
     openClawGatewayToken = settings.openClawGatewayToken
-    webrtcSignalingURL = settings.webrtcSignalingURL
     speakerOutputEnabled = settings.speakerOutputEnabled
     videoStreamingEnabled = settings.videoStreamingEnabled
     proactiveNotificationsEnabled = settings.proactiveNotificationsEnabled
@@ -318,7 +303,6 @@ struct SettingsView: View {
     }
     settings.openClawHookToken = openClawHookToken.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.openClawGatewayToken = openClawGatewayToken.trimmingCharacters(in: .whitespacesAndNewlines)
-    settings.webrtcSignalingURL = webrtcSignalingURL.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.speakerOutputEnabled = speakerOutputEnabled
     settings.videoStreamingEnabled = videoStreamingEnabled
     settings.proactiveNotificationsEnabled = proactiveNotificationsEnabled

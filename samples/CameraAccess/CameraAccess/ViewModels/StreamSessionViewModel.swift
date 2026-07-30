@@ -65,9 +65,6 @@ class StreamSessionViewModel: ObservableObject {
   // Gemini Live integration
   var geminiSessionVM: GeminiSessionViewModel?
 
-  // WebRTC Live streaming integration
-  var webrtcSessionVM: WebRTCSessionViewModel?
-
   // The core DAT SDK StreamSession - handles all streaming operations.
   // nil when the Wearables SDK is unavailable (simulator, or a build without
   // glasses); the iPhone camera path never touches it.
@@ -155,7 +152,6 @@ class StreamSessionViewModel: ObservableObject {
         if let cgImage = self.cpuCIContext.createCGImage(ciImage, from: rect) {
           let image = UIImage(cgImage: cgImage)
           self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
-          self.webrtcSessionVM?.pushVideoFrame(image)
           if self.backgroundFrameCount <= 5 || self.backgroundFrameCount % 120 == 0 {
             NSLog("[Stream] Background frame #%d decoded and forwarded (%dx%d)",
                   self.backgroundFrameCount, width, height)
@@ -206,7 +202,6 @@ class StreamSessionViewModel: ObservableObject {
               self.hasReceivedFirstFrame = true
             }
             self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
-            self.webrtcSessionVM?.pushVideoFrame(image)
           }
         } else {
           // In background: makeUIImage() uses VideoToolbox GPU rendering which iOS suspends.
@@ -236,7 +231,6 @@ class StreamSessionViewModel: ObservableObject {
             if let cgImage = self.cpuCIContext.createCGImage(ciImage, from: rect) {
               let image = UIImage(cgImage: cgImage)
               self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
-              self.webrtcSessionVM?.pushVideoFrame(image)
             }
             self.videoDecoder.invalidateSession()
           }
@@ -342,7 +336,6 @@ class StreamSessionViewModel: ObservableObject {
           self.hasReceivedFirstFrame = true
         }
         self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
-        self.webrtcSessionVM?.pushVideoFrame(image)
       }
     }
     camera.start()

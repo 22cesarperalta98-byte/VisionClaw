@@ -11,7 +11,7 @@
 //
 // Main UI for video streaming from Meta wearable devices using the DAT SDK.
 // This view demonstrates the complete streaming API: video streaming with real-time display, photo capture,
-// and error handling. Extended with Gemini Live AI assistant and WebRTC live streaming integration.
+// and error handling. Extended with Gemini Live AI assistant integration.
 //
 
 import MWDATCore
@@ -20,7 +20,6 @@ import SwiftUI
 struct StreamView: View {
   @ObservedObject var viewModel: StreamSessionViewModel
   @ObservedObject var geminiVM: GeminiSessionViewModel
-  @ObservedObject var webrtcVM: WebRTCSessionViewModel
   @State private var showSettings = false
 
   var body: some View {
@@ -48,14 +47,8 @@ struct StreamView: View {
       .zIndex(2)
       .sheet(isPresented: $showSettings) { SettingsView() }
 
-      // Video backdrop: PiP when WebRTC connected, otherwise single local feed
-      if webrtcVM.isActive && webrtcVM.connectionState == .connected {
-        PiPVideoView(
-          localFrame: viewModel.currentVideoFrame,
-          remoteVideoTrack: webrtcVM.remoteVideoTrack,
-          hasRemoteVideo: webrtcVM.hasRemoteVideo
-        )
-      } else if viewModel.streamingMode == .iPhone, let session = viewModel.iPhoneCaptureSession {
+      // Video backdrop
+      if viewModel.streamingMode == .iPhone, let session = viewModel.iPhoneCaptureSession {
         // Straight off the capture session: hardware-composited at sensor
         // resolution, rather than a converted frame stretched to fit.
         IPhoneCameraPreviewView(session: session)
@@ -128,19 +121,10 @@ struct StreamView: View {
         .padding(.all, 24)
       }
 
-      // WebRTC status overlay (top)
-      if webrtcVM.isActive {
-        VStack {
-          WebRTCStatusBar(webrtcVM: webrtcVM)
-          Spacer()
-        }
-        .padding(.all, 24)
-      }
-
       // Bottom controls layer
       VStack {
         Spacer()
-        ControlsView(viewModel: viewModel, geminiVM: geminiVM, webrtcVM: webrtcVM)
+        ControlsView(viewModel: viewModel, geminiVM: geminiVM)
       }
       .padding(.all, 24)
     }
@@ -151,9 +135,6 @@ struct StreamView: View {
         }
         if geminiVM.isGeminiActive {
           geminiVM.stopSession()
-        }
-        if webrtcVM.isActive {
-          webrtcVM.stopSession()
         }
       }
     }
@@ -177,15 +158,6 @@ struct StreamView: View {
     } message: {
       Text(geminiVM.errorMessage ?? "")
     }
-    // WebRTC error alert
-    .alert("Live Stream", isPresented: Binding(
-      get: { webrtcVM.errorMessage != nil },
-      set: { if !$0 { webrtcVM.errorMessage = nil } }
-    )) {
-      Button("OK") { webrtcVM.errorMessage = nil }
-    } message: {
-      Text(webrtcVM.errorMessage ?? "")
-    }
   }
 }
 
@@ -193,7 +165,6 @@ struct StreamView: View {
 struct ControlsView: View {
   @ObservedObject var viewModel: StreamSessionViewModel
   @ObservedObject var geminiVM: GeminiSessionViewModel
-  @ObservedObject var webrtcVM: WebRTCSessionViewModel
 
   var body: some View {
     // Controls row
@@ -221,7 +192,7 @@ struct ControlsView: View {
         }
       }
 
-      // Gemini AI button (disabled when WebRTC is active — audio conflict)
+      // Gemini AI button
       CircleButton(
         icon: geminiVM.isGeminiActive ? "waveform.circle.fill" : "waveform.circle",
         text: "AI"
@@ -234,26 +205,6 @@ struct ControlsView: View {
           }
         }
       }
-      .opacity(webrtcVM.isActive ? 0.4 : 1.0)
-      .disabled(webrtcVM.isActive)
-
-      // WebRTC Live Stream button (disabled when Gemini is active — audio conflict)
-      CircleButton(
-        icon: webrtcVM.isActive
-          ? "antenna.radiowaves.left.and.right.circle.fill"
-          : "antenna.radiowaves.left.and.right.circle",
-        text: "Live"
-      ) {
-        Task {
-          if webrtcVM.isActive {
-            webrtcVM.stopSession()
-          } else {
-            await webrtcVM.startSession()
-          }
-        }
-      }
-      .opacity(geminiVM.isGeminiActive ? 0.4 : 1.0)
-      .disabled(geminiVM.isGeminiActive)
     }
   }
 }
