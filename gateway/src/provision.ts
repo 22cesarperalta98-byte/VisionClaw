@@ -94,6 +94,12 @@ function appSignature(servers: readonly unknown[], tools: readonly unknown[]): s
         mcp_server_name?: string;
         default_config?: { permission_policy?: { type?: string } } | null;
       };
+      // Compare only what we manage. The server normalizes stored configs --
+      // agent_toolset comes back with a default_config we never sent -- so
+      // comparing the whole shape meant have != want on every request: an
+      // agents.update (deduped server-side, version never moved) plus a
+      // sessions.update before every single turn, forever.
+      if (x.type !== "mcp_toolset") return `${x.type}`;
       return `${x.type}:${x.mcp_server_name ?? ""}:${x.default_config?.permission_policy?.type ?? ""}`;
     })
     .sort();

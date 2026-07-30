@@ -161,7 +161,11 @@ class GeminiLiveService: ObservableObject {
         "clientContent": [
           "turns": [
             ["role": "user", "parts": [["text": text]]]
-          ]
+          ],
+          // Without this the Live API only appends the text to context and
+          // waits for more -- the model never responds. Task results arrived,
+          // were injected, and sat unspoken while the user heard silence.
+          "turnComplete": true
         ]
       ]
       self?.sendJSON(msg)

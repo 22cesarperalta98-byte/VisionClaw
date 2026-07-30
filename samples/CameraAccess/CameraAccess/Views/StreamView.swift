@@ -21,12 +21,32 @@ struct StreamView: View {
   @ObservedObject var viewModel: StreamSessionViewModel
   @ObservedObject var geminiVM: GeminiSessionViewModel
   @ObservedObject var webrtcVM: WebRTCSessionViewModel
+  @State private var showSettings = false
 
   var body: some View {
     ZStack {
       // Black background for letterboxing/pillarboxing
       Color.black
         .edgesIgnoringSafeArea(.all)
+
+      // Settings access. In phone mode this view is the entire app, so
+      // without a gear here Settings is unreachable.
+      VStack {
+        HStack {
+          Spacer()
+          Button { showSettings = true } label: {
+            Image(systemName: "gearshape.fill")
+              .font(.system(size: 18))
+              .foregroundStyle(.white.opacity(0.85))
+              .padding(10)
+              .background(.black.opacity(0.35), in: Circle())
+          }
+          .padding(.trailing, 16)
+        }
+        Spacer()
+      }
+      .zIndex(2)
+      .sheet(isPresented: $showSettings) { SettingsView() }
 
       // Video backdrop: PiP when WebRTC connected, otherwise single local feed
       if webrtcVM.isActive && webrtcVM.connectionState == .connected {
@@ -178,13 +198,19 @@ struct ControlsView: View {
   var body: some View {
     // Controls row
     HStack(spacing: 8) {
-      CustomButton(
-        title: "Stop streaming",
-        style: .destructive,
-        isDisabled: false
-      ) {
-        Task {
-          await viewModel.stopSession()
+      // Glasses have a stop: they are a remote camera someone may be wearing.
+      // The phone camera IS the app -- stopping it just strands the screen on
+      // a spinner -- so phone mode has no stop; the AI button is the toggle
+      // that means something, and closing the app releases the camera.
+      if viewModel.streamingMode == .glasses {
+        CustomButton(
+          title: "Stop streaming",
+          style: .destructive,
+          isDisabled: false
+        ) {
+          Task {
+            await viewModel.stopSession()
+          }
         }
       }
 
