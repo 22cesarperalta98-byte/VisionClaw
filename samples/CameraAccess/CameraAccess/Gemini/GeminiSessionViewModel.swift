@@ -13,6 +13,9 @@ class GeminiSessionViewModel: ObservableObject {
   @Published var openClawConnectionState: OpenClawConnectionState = .notConfigured
   @Published var lastVoiceToVoiceMs: Int?
   @Published var localBargeInFlash = false
+  /// nil until capture starts; then whether hardware echo cancellation engaged
+  /// this session. Shown on screen because it varies run to run on this beta.
+  @Published var echoCancellationOn: Bool?
   private let geminiService = GeminiLiveService()
   private let openClawBridge = OpenClawBridge()
   private var toolCallRouter: ToolCallRouter?
@@ -45,7 +48,7 @@ class GeminiSessionViewModel: ObservableObject {
         // mute while it speaks. Worse than barge-in, but never a feedback loop.
         let speakerOnPhone = self.streamingMode == .iPhone || SettingsManager.shared.speakerOutputEnabled
         if speakerOnPhone && !self.audioManager.echoCancellationActive
-          && self.geminiService.isModelSpeaking { return }
+          && self.audioManager.isSpeakerActive { return }
         self.geminiService.sendAudio(data: data)
       }
     }
@@ -173,6 +176,7 @@ class GeminiSessionViewModel: ObservableObject {
     // Start mic capture
     do {
       try audioManager.startCapture()
+      echoCancellationOn = audioManager.echoCancellationActive
     } catch {
       errorMessage = "Mic capture failed: \(error.localizedDescription)"
       geminiService.disconnect()
@@ -223,6 +227,7 @@ class GeminiSessionViewModel: ObservableObject {
     userTranscript = ""
     aiTranscript = ""
     toolCallStatus = .idle
+    echoCancellationOn = nil
   }
 
   /// Let look_closely reach the camera. Called by whoever owns both view models;

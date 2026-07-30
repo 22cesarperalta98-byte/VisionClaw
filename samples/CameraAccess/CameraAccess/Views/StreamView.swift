@@ -35,6 +35,15 @@ struct StreamView: View {
           // Measured voice-to-voice latency: last utterance end to first reply
           // audio. On screen because latency tuning is happening in the field,
           // far from Xcode.
+          if let aec = geminiVM.echoCancellationOn {
+            Text(aec ? "AEC" : "HD")
+              .font(.system(.footnote, design: .monospaced).weight(.semibold))
+              .foregroundStyle(aec ? .green : .yellow)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 6)
+              .background(.black.opacity(0.35), in: Capsule())
+              .padding(.leading, 16)
+          }
           if geminiVM.localBargeInFlash {
             Text("CUT")
               .font(.system(.footnote, design: .monospaced).weight(.bold))

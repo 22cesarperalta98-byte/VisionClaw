@@ -20,6 +20,22 @@ class AudioManager {
   private(set) var echoCancellationActive = false
 
   private enum AudioEngineError: Error { case zeroSampleRate }
+
+  // Fallback-path playback depth: scheduled player buffers not yet finished.
+  private let playbackCountLock = NSLock()
+  private var scheduledPlaybackBuffers = 0
+
+  /// True while ANYTHING is still coming out of the speaker -- including the
+  /// buffered tail that keeps playing long after the server declared the turn
+  /// complete. The half-duplex mute must follow this, not the model state:
+  /// gating on generation-complete opened the mic while the speaker was still
+  /// talking, and the model heard its own voice for the rest of the buffer.
+  var isSpeakerActive: Bool {
+    if let vpioUnit { return vpioUnit.hasQueuedPlayback }
+    playbackCountLock.lock()
+    defer { playbackCountLock.unlock() }
+    return scheduledPlaybackBuffers > 0
+  }
   private var isCapturing = false
   private var wasCapturingBeforeInterruption = false
   private var useIPhoneMode = false
@@ -302,7 +318,15 @@ class AudioManager {
       }
     }
 
-    playerNode.scheduleBuffer(buffer)
+    playbackCountLock.lock()
+    scheduledPlaybackBuffers += 1
+    playbackCountLock.unlock()
+    playerNode.scheduleBuffer(buffer) { [weak self] in
+      guard let self else { return }
+      self.playbackCountLock.lock()
+      self.scheduledPlaybackBuffers = max(0, self.scheduledPlaybackBuffers - 1)
+      self.playbackCountLock.unlock()
+    }
     if !playerNode.isPlaying {
       playerNode.play()
     }
