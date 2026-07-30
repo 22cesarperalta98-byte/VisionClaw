@@ -182,7 +182,7 @@ struct SettingsView: View {
           Toggle("Video Streaming", isOn: $videoStreamingEnabled)
         }
 
-        Section(header: Text("Notifications"), footer: Text("Receive proactive updates from OpenClaw (heartbeat, scheduled tasks) spoken through the glasses.")) {
+        Section(header: Text("Notifications"), footer: Text("Speak proactive updates from your agent, such as finished tasks and scheduled reminders.")) {
           Toggle("Proactive Notifications", isOn: $proactiveNotificationsEnabled)
         }
 
