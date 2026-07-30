@@ -183,6 +183,30 @@ app.post("/v1/chat/completions", async (req, res) => {
   }
 });
 
+// LiveKit room ticket: the phone trades its gateway token for a short-lived
+// room JWT. The LiveKit API secret never leaves the server, and each user gets
+// their own room -- the same isolation boundary as their CMA session.
+app.post("/livekit-token", async (req, res) => {
+  const userId = userFromRequest(req.header("authorization"));
+  if (!userId) {
+    res.status(401).json({ error: { message: "invalid or missing gateway token" } });
+    return;
+  }
+  const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
+  if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    res.status(503).json({ error: { message: "LiveKit is not configured on this gateway" } });
+    return;
+  }
+  const { AccessToken } = await import("livekit-server-sdk");
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    identity: userId,
+    ttl: "15m",
+  });
+  const room = `vc-${userId}`;
+  at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true });
+  res.json({ url: LIVEKIT_URL, room, token: await at.toJwt() });
+});
+
 // Task history for the app's Recent Tasks view.
 app.get("/tasks", async (req, res) => {
   const userId = userFromRequest(req.header("authorization"));
