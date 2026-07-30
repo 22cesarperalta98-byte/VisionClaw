@@ -90,7 +90,7 @@ class AudioManager {
     // the formats instead of reading back whatever it negotiated.
     do {
       let unit = try VoiceProcessingIOUnit()
-      unit.onCapturedChunk = { [weak self] chunk in self?.onAudioCaptured?(chunk) }
+      unit.onCapturedChunk = { [weak self] chunk in self?.handleEchoCancelledChunk(chunk) }
       try unit.start()
       vpioUnit = unit
       echoCancellationActive = true
@@ -207,6 +207,48 @@ class AudioManager {
 
     audioEngine = engine
     playerNode = player
+  }
+
+  // MARK: - Local barge-in
+  //
+  // The server can only interrupt generation it is still doing, and it
+  // generates a whole answer in a few seconds while the phone plays it out for
+  // thirty -- so most of the time the user speaks, there is nothing server-side
+  // to interrupt. Their words still land (they become the next turn); what
+  // fails is only the speaker refusing to shut up. That half is client-side
+  // physics: while queued audio is playing, sustained voice energy on the
+  // echo-cancelled mic means a human is talking over us -- flush the queue.
+  // Only runs with echo cancellation active: on the raw fallback path the
+  // playback itself leaks into the mic and would self-trigger.
+  private var loudChunkStreak = 0
+
+  private func handleEchoCancelledChunk(_ chunk: Data) {
+    if let vpioUnit, vpioUnit.hasQueuedPlayback {
+      if Self.rmsOfInt16(chunk) > 700 {
+        loudChunkStreak += 1
+        // Chunks are ~100 ms; two in a row is deliberate speech, not a cough.
+        if loudChunkStreak >= 2 {
+          NSLog("[Audio] Local barge-in: flushing queued playback")
+          vpioUnit.clearPlayback()
+          loudChunkStreak = 0
+        }
+      } else {
+        loudChunkStreak = 0
+      }
+    } else {
+      loudChunkStreak = 0
+    }
+    onAudioCaptured?(chunk)
+  }
+
+  private static func rmsOfInt16(_ data: Data) -> Double {
+    data.withUnsafeBytes { raw -> Double in
+      let samples = raw.bindMemory(to: Int16.self)
+      guard !samples.isEmpty else { return 0 }
+      var sum = 0.0
+      for sample in samples { sum += Double(sample) * Double(sample) }
+      return (sum / Double(samples.count)).squareRoot()
+    }
   }
 
   func playAudio(data: Data) {
@@ -589,6 +631,12 @@ final class VoiceProcessingIOUnit {
     playbackLock.lock()
     playbackData.removeAll(keepingCapacity: true)
     playbackLock.unlock()
+  }
+
+  var hasQueuedPlayback: Bool {
+    playbackLock.lock()
+    defer { playbackLock.unlock() }
+    return !playbackData.isEmpty
   }
 
   fileprivate func renderCapture(
