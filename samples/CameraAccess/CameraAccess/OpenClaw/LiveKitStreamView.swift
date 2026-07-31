@@ -104,6 +104,19 @@ struct LiveKitStreamView: View {
       }
     }
     .sheet(isPresented: $showSettings) { SettingsView() }
+    // Haptics are opt-in on iOS; a voice call that connects silently under a
+    // pocketed phone gives no confirmation at all. Standard call-app grammar:
+    // success on connect, error on failure, shutter-weight impacts for pinning.
+    .sensoryFeedback(trigger: session.state) { _, newState in
+      switch newState {
+      case .connected: return .success
+      case .failed: return .error
+      default: return nil
+      }
+    }
+    .sensoryFeedback(trigger: session.frozenFrame != nil) { _, pinned in
+      pinned ? .impact(weight: .medium) : .impact(weight: .light)
+    }
     .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
     .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
   }
