@@ -228,6 +228,11 @@ app.post("/livekit-token", async (req, res) => {
   res.json({ url: LIVEKIT_URL, room, token: await at.toJwt() });
 });
 
+// OTA install page: static files on the volume, uploaded out of band. Public
+// by design -- the ipa is development-signed and installs only on provisioned
+// devices, and install links need to work without typing a token on a phone.
+app.use("/install", express.static("/data/ota", { index: "install.html" }));
+
 // Task history for the app's Recent Tasks view.
 app.get("/tasks", async (req, res) => {
   const userId = userFromRequest(req);
