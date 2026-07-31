@@ -27,6 +27,50 @@ final class LiveKitSession: ObservableObject {
 
   var isActive: Bool { state == .connected || state == .connecting }
 
+  // MARK: - Freeze (pin a frame for the model to refer to)
+
+  /// While set, the screen shows this frame and the published video is muted:
+  /// the model receives no newer frames, so the pinned one stays the most
+  /// recent thing it has seen -- "this" means the frame the user pinned.
+  @Published private(set) var frozenFrame: UIImage?
+
+  private let frameGrabber = LatestFrameGrabber()
+  private var grabberTrack: LocalVideoTrack?
+
+  private func attachGrabber(to track: LocalVideoTrack?) {
+    if let old = grabberTrack { old.remove(videoRenderer: frameGrabber) }
+    grabberTrack = track
+    if let track { track.add(videoRenderer: frameGrabber) }
+  }
+
+  func toggleFreeze() async {
+    if frozenFrame != nil {
+      await unfreeze()
+    } else {
+      await freeze()
+    }
+  }
+
+  func freeze() async {
+    guard frozenFrame == nil, let image = frameGrabber.latestImage() else { return }
+    frozenFrame = image
+    if state == .connected {
+      if let pub = room.localParticipant.localVideoTracks.first {
+        try? await pub.mute()
+      }
+    }
+  }
+
+  func unfreeze() async {
+    guard frozenFrame != nil else { return }
+    frozenFrame = nil
+    if state == .connected {
+      if let pub = room.localParticipant.localVideoTracks.first {
+        try? await pub.unmute()
+      }
+    }
+  }
+
   // MARK: - Zoom
 
   /// Optical-then-digital zoom applied at the sensor through whichever camera
@@ -73,6 +117,7 @@ final class LiveKitSession: ObservableObject {
     do {
       try await track.start()
       previewTrack = track
+      attachGrabber(to: track)
     } catch {
       NSLog("[LiveKit] preview camera unavailable: %@", error.localizedDescription)
     }
@@ -109,6 +154,7 @@ final class LiveKitSession: ObservableObject {
         localVideoTrack = room.localParticipant.localVideoTracks
           .compactMap { $0.track as? LocalVideoTrack }
           .first
+        attachGrabber(to: localVideoTrack)
       } catch {
         NSLog("[LiveKit] camera unavailable, voice-only: %@", error.localizedDescription)
       }
@@ -127,6 +173,7 @@ final class LiveKitSession: ObservableObject {
     localVideoTrack = nil
     state = .disconnected
     resetZoom()
+    frozenFrame = nil
     await startPreview()
   }
 
@@ -165,5 +212,39 @@ final class LiveKitSession: ObservableObject {
       throw NSError(domain: "LiveKitSession", code: 1, userInfo: [NSLocalizedDescriptionKey: detail])
     }
     return try JSONDecoder().decode(Ticket.self, from: data)
+  }
+}
+
+
+/// Keeps the most recent video frame so a freeze can pin exactly what was on
+/// screen. Conversion to UIImage happens only when a pin is taken.
+final class LatestFrameGrabber: VideoRenderer {
+  private let lock = NSLock()
+  private var latestFrame: VideoFrame?
+
+  var isAdaptiveStreamEnabled: Bool { false }
+  var adaptiveStreamSize: CGSize { .zero }
+
+  func set(size: CGSize) {}
+
+  func render(frame: VideoFrame) {
+    lock.lock()
+    latestFrame = frame
+    lock.unlock()
+  }
+
+  func render(frame: VideoFrame, captureDevice: AVCaptureDevice?, captureOptions: VideoCaptureOptions?) {
+    render(frame: frame)
+  }
+
+  func latestImage() -> UIImage? {
+    lock.lock()
+    let frame = latestFrame
+    lock.unlock()
+    guard let pixelBuffer = frame?.toCVPixelBuffer() else { return nil }
+    let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+    let context = CIContext()
+    guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+    return UIImage(cgImage: cgImage)
   }
 }

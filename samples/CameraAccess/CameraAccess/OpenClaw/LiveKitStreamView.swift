@@ -21,6 +21,9 @@ struct LiveKitStreamView: View {
               .onChanged { scale in session.updateZoom(scale: scale) }
               .onEnded { _ in session.beginZoomGesture() }
           )
+          .onLongPressGesture(minimumDuration: 0.4) {
+            Task { await session.toggleFreeze() }
+          }
           .overlay(alignment: .topLeading) {
             if session.zoomFactor > 1.05 {
               Text(String(format: "%.1fx", session.zoomFactor))
@@ -52,6 +55,29 @@ struct LiveKitStreamView: View {
         }
       }
 
+      // Pinned frame floats as a card over the still-live view: the user keeps
+      // their bearings, and the caption doubles as the release affordance.
+      // The model is seeing nothing newer than this frame, so screen and model
+      // agree on what "this" means.
+      if let frozen = session.frozenFrame {
+        Color.black.opacity(0.55)
+          .edgesIgnoringSafeArea(.all)
+          .onTapGesture { Task { await session.unfreeze() } }
+        VStack(spacing: 16) {
+          Image(uiImage: frozen)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: 300, maxHeight: 480)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(.white.opacity(0.9), lineWidth: 2))
+            .shadow(radius: 18)
+          Text("Tap anywhere to return to live")
+            .font(.subheadline)
+            .foregroundStyle(.white.opacity(0.85))
+        }
+        .allowsHitTesting(false)
+      }
+
       VStack {
         HStack {
           Spacer()
@@ -65,8 +91,16 @@ struct LiveKitStreamView: View {
           .padding(.trailing, 16)
         }
         Spacer()
-        LiveKitCallButton(session: session)
-          .padding(.bottom, 24)
+        ZStack {
+          // Shutter front and center: pinning what you see is the primary act.
+          FreezeButton(session: session)
+          HStack {
+            LiveKitCallButton(session: session, compact: true)
+              .padding(.leading, 24)
+            Spacer()
+          }
+        }
+        .padding(.bottom, 24)
       }
     }
     .sheet(isPresented: $showSettings) { SettingsView() }
@@ -78,6 +112,7 @@ struct LiveKitStreamView: View {
 /// Same call semantics as before: green to connect, red to hang up.
 struct LiveKitCallButton: View {
   @ObservedObject var session: LiveKitSession
+  var compact = false
 
   var body: some View {
     Button {
@@ -92,16 +127,36 @@ struct LiveKitCallButton: View {
       ZStack {
         Circle()
           .fill(session.isActive ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
-          .frame(width: 64, height: 64)
+          .frame(width: compact ? 48 : 64, height: compact ? 48 : 64)
         if session.state == .connecting {
           ProgressView().tint(.white)
         } else {
           Image(systemName: session.isActive ? "phone.down.fill" : "phone.fill")
-            .font(.system(size: 24, weight: .semibold))
+            .font(.system(size: compact ? 18 : 24, weight: .semibold))
             .foregroundStyle(.white)
         }
       }
     }
     .disabled(session.state == .connecting)
+  }
+}
+
+/// Camera-app shutter: tap to pin the current frame, tap again to release.
+struct FreezeButton: View {
+  @ObservedObject var session: LiveKitSession
+
+  var body: some View {
+    Button {
+      Task { await session.toggleFreeze() }
+    } label: {
+      ZStack {
+        Circle()
+          .stroke(session.frozenFrame != nil ? Color.yellow : .white, lineWidth: 4)
+          .frame(width: 68, height: 68)
+        Circle()
+          .fill(session.frozenFrame != nil ? Color.yellow : .white)
+          .frame(width: 54, height: 54)
+      }
+    }
   }
 }
