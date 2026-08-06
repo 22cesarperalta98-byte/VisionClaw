@@ -176,17 +176,9 @@ export async function ensureUser(userId: string): Promise<UserResources & { sess
         });
         console.log(`[provision] session apps reconciled for ${userId}`);
       }
-      // Unmount memory from sessions created before the 2026-08-06 removal;
-      // deleting the resource keeps the session's conversation history.
-      for await (const res of anthropic.beta.sessions.resources.list(u.sessionId)) {
-        if (res.type === "memory_store") {
-          // SDK type gap: the memory_store variant omits the resource id the
-          // API actually returns (its sibling variants declare it).
-          const resourceId = (res as { id?: string }).id ?? res.memory_store_id;
-          await anthropic.beta.sessions.resources.delete(resourceId, { session_id: u.sessionId });
-          console.log(`[provision] memory store unmounted from session for ${userId}`);
-        }
-      }
+      // Memory-store mounts carry no resource id, so they cannot be deleted
+      // from a live session; sessions from before the 2026-08-06 memory
+      // removal keep their mount until the session is recreated.
     } catch (err) {
       console.warn(`[provision] could not reconcile session apps for ${userId}:`, err);
     }
