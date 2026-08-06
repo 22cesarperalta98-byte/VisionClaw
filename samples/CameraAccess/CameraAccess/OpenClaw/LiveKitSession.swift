@@ -241,8 +241,17 @@ final class LatestFrameGrabber: VideoRenderer {
     lock.lock()
     let frame = latestFrame
     lock.unlock()
-    guard let pixelBuffer = frame?.toCVPixelBuffer() else { return nil }
-    let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+    guard let frame, let pixelBuffer = frame.toCVPixelBuffer() else { return nil }
+    var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+    // The sensor delivers landscape buffers; renderers apply the frame's
+    // rotation tag at display time. Converting raw pixels skips that step, so
+    // apply it here or every portrait pin comes out sideways.
+    switch frame.rotation {
+    case ._90: ciImage = ciImage.oriented(.right)
+    case ._180: ciImage = ciImage.oriented(.down)
+    case ._270: ciImage = ciImage.oriented(.left)
+    default: break
+    }
     let context = CIContext()
     guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
     return UIImage(cgImage: cgImage)
