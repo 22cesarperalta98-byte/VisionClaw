@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass
 
 import aiohttp
+from google import genai
+from google.genai import types as genai_types
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -44,15 +46,58 @@ world through their phone camera or smart glasses. Keep responses concise and na
 
 You can see live video. Answer visual questions directly from what you see.
 
-For anything requiring action or lookup beyond your sight -- messages, web search, lists,
-reminders, calendars, research, smart home -- use the execute tool. Speak a brief natural
-acknowledgment BEFORE calling it, never call it silently. Results may arrive as a follow-up;
-relay them as the answer to what was asked, not as a notification."""
+For quick factual lookups -- weather, sports scores, stock prices, news, opening hours,
+current facts about the world -- use quick_search. It answers in a couple of seconds;
+just relay the result. This includes looking up things you can see on camera.
+
+For anything requiring action or multi-step work -- messages, lists, reminders, calendars,
+research, smart home -- use the execute tool. Speak a brief natural acknowledgment BEFORE
+calling it, never call it silently. Results may arrive as a follow-up; relay them as the
+answer to what was asked, not as a notification."""
 
 
 @dataclass
 class Userdata:
     user_id: str
+
+
+_search_client: genai.Client | None = None
+
+
+def _get_search_client() -> genai.Client:
+    global _search_client
+    if _search_client is None:
+        _search_client = genai.Client()
+    return _search_client
+
+
+@function_tool
+async def quick_search(ctx: RunContext[Userdata], query: str) -> str:
+    """Fast grounded web lookup for facts that change: weather, sports scores, stock
+    prices, news, opening hours, and quick factual questions. Returns a spoken-ready
+    answer in about two seconds. For actions or multi-step research, use execute."""
+    t0 = time.monotonic()
+    try:
+        resp = await _get_search_client().aio.models.generate_content(
+            model=os.environ.get("QUICK_SEARCH_MODEL", "gemini-3.5-flash-lite"),
+            contents=query,
+            config=genai_types.GenerateContentConfig(
+                # Grounded generation: Google searches internally and returns a
+                # synthesized answer in one round-trip -- no link-reading loop.
+                # thinking_level has no "off"; "low" measured faster than default.
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                thinking_config=genai_types.ThinkingConfig(thinking_level="low"),
+            ),
+        )
+    except Exception:
+        logger.exception("quick_search failed: user=%s query=%r", ctx.userdata.user_id, query[:120])
+        return "The quick search failed. Offer to try again, or use execute for a deeper attempt."
+    text = (resp.text or "").strip()
+    logger.info(
+        "quick_search: user=%s query=%r latency_s=%.2f len=%d",
+        ctx.userdata.user_id, query[:120], time.monotonic() - t0, len(text),
+    )
+    return text or "The search returned nothing useful; try execute for a deeper attempt."
 
 
 # How long a tool call may hold the model's turn open before the answer is
@@ -262,7 +307,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     await session.start(
-        agent=Agent(instructions=INSTRUCTIONS, tools=[execute]),
+        agent=Agent(instructions=INSTRUCTIONS, tools=[execute, quick_search]),
         room=ctx.room,
         # Video is opt-in (RoomInputOptions.video_enabled defaults to False);
         # without this the model gets no frames and hallucinates a scene when
