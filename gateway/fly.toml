@@ -24,7 +24,8 @@ primary_region = 'sjc'
   # empty ones, so it must outlive any single machine.
   STORE_PATH = '/data/gateway-store.json'
   WORKSPACE_MCP_URL = 'https://mcp.visionagents.app/mcp'
-  AGENT_MODEL = 'claude-opus-5'
+  AGENT_MODEL = 'claude-sonnet-5'
+  AGENT_EFFORT = 'none'
   AGENT_EFFORT = 'medium'
   QUICK_ANSWER_TIMEOUT_MS = '45000'
   # GOOGLE_CLIENT_ID is set with `fly secrets set` rather than living here, so a

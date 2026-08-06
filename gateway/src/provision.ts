@@ -31,7 +31,7 @@ export async function ensureShared(): Promise<{ agentId: string; environmentId: 
   if (!store.shared.agentId) {
     const agent = await anthropic.beta.agents.create({
       name: "VisionClaw Action Agent",
-      model: { id: config.agentModel, effort: config.agentEffort },
+      model: wantModel(),
       system: AGENT_SYSTEM_PROMPT,
       mcp_servers: mcpServers(),
       tools: agentTools(),
@@ -76,7 +76,7 @@ function modelSignature(model: unknown): string {
 }
 
 function wantModel() {
-  return { id: config.agentModel, effort: { type: config.agentEffort } };
+  return { id: config.agentModel, effort: config.agentEffort ? { type: config.agentEffort } : null };
 }
 
 /** Canonical projection of the app surface, for drift detection. */

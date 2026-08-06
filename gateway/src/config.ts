@@ -6,7 +6,8 @@ export interface GatewayConfig {
   /** token -> userId. Parsed from GATEWAY_TOKENS="tokenA:alice,tokenB:bob". */
   tokens: Map<string, string>;
   agentModel: string;
-  agentEffort: "low" | "medium" | "high";
+  /** Reasoning effort for the action agent; null = no extended reasoning. */
+  agentEffort: "low" | "medium" | "high" | "xhigh" | "max" | null;
   /** How long a /v1/chat/completions call waits before converting to a background task. */
   quickAnswerTimeoutMs: number;
   /**
@@ -39,8 +40,14 @@ export const config: GatewayConfig = {
   port: Number(process.env.PORT ?? 8788),
   storePath: process.env.STORE_PATH ?? "./data/gateway-store.json",
   tokens: parseTokens(process.env.GATEWAY_TOKENS),
-  agentModel: process.env.AGENT_MODEL ?? "claude-opus-5",
-  agentEffort: (process.env.AGENT_EFFORT as GatewayConfig["agentEffort"]) ?? "medium",
+  // Sonnet with no reasoning effort: the voice loop's tasks are mostly tool
+  // dispatch, where per-step thinking passes dominate latency (a 2s pair of
+  // lookups measured 32s end-to-end on opus/low).
+  agentModel: process.env.AGENT_MODEL ?? "claude-sonnet-5",
+  agentEffort:
+    !process.env.AGENT_EFFORT || process.env.AGENT_EFFORT === "none"
+      ? null
+      : (process.env.AGENT_EFFORT as Exclude<GatewayConfig["agentEffort"], null>),
   quickAnswerTimeoutMs: Number(process.env.QUICK_ANSWER_TIMEOUT_MS ?? 30_000),
   spawnMode: process.env.SPAWN_MODE !== "false",
   serviceToken: process.env.GATEWAY_SERVICE_TOKEN || undefined,
