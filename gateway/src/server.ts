@@ -227,7 +227,10 @@ app.post("/livekit-token", async (req, res) => {
     ttl: "15m",
     metadata: JSON.stringify({ engine }),
   });
-  const room = `vc-${userId}`;
+  // One room per call, not per user: agent dispatch fires on room creation,
+  // so a redial into a still-draining room from the previous call would get
+  // no agent at all (observed live -- ~90s dead window after every hangup).
+  const room = `vc-${userId}-${Date.now().toString(36)}`;
   at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true });
   res.json({ url: LIVEKIT_URL, room, token: await at.toJwt() });
 });
