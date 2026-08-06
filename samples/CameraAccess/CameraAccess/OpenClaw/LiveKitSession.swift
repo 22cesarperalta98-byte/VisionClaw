@@ -9,7 +9,7 @@ import SwiftUI
 /// reconnection -- lives in WebRTC and the server-side agent now. What remains
 /// on the phone is a room ticket and two track toggles.
 @MainActor
-final class LiveKitSession: ObservableObject {
+final class LiveKitSession: NSObject, ObservableObject {
   enum State: Equatable {
     case disconnected
     case connecting
@@ -17,7 +17,22 @@ final class LiveKitSession: ObservableObject {
     case failed(String)
   }
 
+  /// What the agent is doing right now, surfaced so a dead worker is visible
+  /// instead of an empty room that politely ignores you. Driven by agent
+  /// presence in the room plus the standard `lk.agent.state` attribute the
+  /// agents framework publishes (listening / thinking / speaking).
+  enum AgentStatus: Equatable {
+    case none        // no active call
+    case waiting     // call is up, agent hasn't joined the room
+    case starting    // agent joined, model session still initializing
+    case listening
+    case thinking
+    case speaking
+    case left        // agent was here and disconnected mid-call
+  }
+
   @Published private(set) var state: State = .disconnected
+  @Published private(set) var agentStatus: AgentStatus = .none
   @Published private(set) var localVideoTrack: LocalVideoTrack?
   /// Camera-only preview while no call is active. The camera IS this app;
   /// hanging up stops the listening, not the seeing.
@@ -25,7 +40,29 @@ final class LiveKitSession: ObservableObject {
 
   let room = Room()
 
+  override init() {
+    super.init()
+    room.add(delegate: self)
+  }
+
   var isActive: Bool { state == .connected || state == .connecting }
+
+  func refreshAgentStatus() {
+    guard state == .connected else {
+      agentStatus = .none
+      return
+    }
+    guard let agent = room.remoteParticipants.values.first(where: { $0.isAgent }) else {
+      if agentStatus != .left { agentStatus = .waiting }
+      return
+    }
+    switch agent.agentState {
+    case .idle, .initializing: agentStatus = .starting
+    case .listening: agentStatus = .listening
+    case .thinking: agentStatus = .thinking
+    case .speaking: agentStatus = .speaking
+    }
+  }
 
   // MARK: - Freeze (pin a frame for the model to refer to)
 
@@ -160,8 +197,10 @@ final class LiveKitSession: ObservableObject {
       }
       state = .connected
       resetZoom()
+      refreshAgentStatus()
     } catch {
       state = .failed(error.localizedDescription)
+      agentStatus = .none
       await room.disconnect()
       // Even a failed call leaves the user with eyes.
       await startPreview()
@@ -172,6 +211,7 @@ final class LiveKitSession: ObservableObject {
     await room.disconnect()
     localVideoTrack = nil
     state = .disconnected
+    agentStatus = .none
     resetZoom()
     frozenFrame = nil
     await startPreview()
@@ -215,6 +255,33 @@ final class LiveKitSession: ObservableObject {
   }
 }
 
+
+// Room events arrive on SDK threads; each handler hops to the main actor and
+// re-derives agent status from the room, so ordering races collapse into
+// "recompute from current truth".
+extension LiveKitSession: RoomDelegate {
+  nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
+    Task { @MainActor in self.refreshAgentStatus() }
+  }
+
+  nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
+    let agentLeft = participant.isAgent
+    Task { @MainActor in
+      if agentLeft, self.state == .connected {
+        self.agentStatus = .left
+      } else {
+        self.refreshAgentStatus()
+      }
+    }
+  }
+
+  nonisolated func room(
+    _ room: Room, participant: Participant, didUpdateAttributes attributes: [String: String]
+  ) {
+    guard participant.isAgent else { return }
+    Task { @MainActor in self.refreshAgentStatus() }
+  }
+}
 
 /// Keeps the most recent video frame so a freeze can pin exactly what was on
 /// screen. Conversion to UIImage happens only when a pin is taken.

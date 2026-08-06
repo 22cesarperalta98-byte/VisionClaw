@@ -78,6 +78,19 @@ struct LiveKitStreamView: View {
         .allowsHitTesting(false)
       }
 
+      // Agent liveness, top and center: a call can connect perfectly and still
+      // be an empty room if the worker never dispatches. The pill makes the
+      // difference visible -- stuck on "Waiting for agent" means the backend
+      // is down, not that the model is ignoring you.
+      if session.state == .connected && session.agentStatus != .none {
+        VStack {
+          AgentStatusPill(status: session.agentStatus)
+            .padding(.top, 60)
+          Spacer()
+        }
+        .animation(.easeInOut(duration: 0.2), value: session.agentStatus)
+      }
+
       VStack {
         HStack {
           Spacer()
@@ -119,6 +132,49 @@ struct LiveKitStreamView: View {
     }
     .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
     .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+  }
+}
+
+/// One glance answers "is anything actually listening to me right now?"
+struct AgentStatusPill: View {
+  let status: LiveKitSession.AgentStatus
+
+  private var label: String {
+    switch status {
+    case .waiting: return "Waiting for agent"
+    case .starting: return "Agent starting"
+    case .listening: return "Listening"
+    case .thinking: return "Thinking"
+    case .speaking: return "Speaking"
+    case .left: return "Agent left the call"
+    case .none: return ""
+    }
+  }
+
+  private var dotColor: Color? {
+    switch status {
+    case .listening: return .green
+    case .thinking: return .yellow
+    case .speaking: return .blue
+    case .left: return .red
+    default: return nil
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      if let dotColor {
+        Circle().fill(dotColor).frame(width: 8, height: 8)
+      } else {
+        ProgressView().controlSize(.small).tint(.white)
+      }
+      Text(label)
+        .font(.system(.footnote, design: .rounded).weight(.semibold))
+        .foregroundStyle(.white)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 7)
+    .background(.black.opacity(0.45), in: Capsule())
   }
 }
 
