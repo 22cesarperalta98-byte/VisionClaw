@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 
 import aiohttp
@@ -138,11 +139,15 @@ async def execute(ctx: RunContext[Userdata], task: str) -> str:
     notes, smart home control. Describe the task completely, with names, content
     and platforms."""
     logger.info("execute start: user=%s task=%r", ctx.userdata.user_id, task[:200])
+    task_start = time.monotonic()
     job = asyncio.ensure_future(_gateway_execute(ctx.userdata.user_id, task))
     done, _ = await asyncio.wait({job}, timeout=QUICK_ANSWER_S)
     if done:
         result = await job
-        logger.info("execute quick result: user=%s len=%d", ctx.userdata.user_id, len(result))
+        logger.info(
+            "execute quick result: user=%s len=%d agent_task_time_s=%.1f",
+            ctx.userdata.user_id, len(result), time.monotonic() - task_start,
+        )
         return result
 
     # Slow path: free the model to keep talking, heartbeat while the task runs,
@@ -174,7 +179,10 @@ async def execute(ctx: RunContext[Userdata], task: str) -> str:
         try:
             result = await job
         except Exception:
-            logger.exception("execute background task failed: user=%s", user_id)
+            logger.exception(
+                "execute background task failed: user=%s agent_task_time_s=%.1f",
+                user_id, time.monotonic() - task_start,
+            )
             result = None
         if result is None:
             instructions = (
@@ -183,14 +191,21 @@ async def execute(ctx: RunContext[Userdata], task: str) -> str:
         elif result.startswith(GATEWAY_DEFERRAL_PREFIX):
             # Past the gateway's own wait the result is no longer in our hands;
             # when it lands with no client connected, the gateway parks it itself.
-            logger.info("execute deferred past gateway wait: user=%s", user_id)
+            # Elapsed here is the gateway wait, not the task's true duration.
+            logger.info(
+                "execute deferred past gateway wait: user=%s elapsed_s=%.1f",
+                user_id, time.monotonic() - task_start,
+            )
             instructions = (
                 "The background task is taking longer than expected and is still running. "
                 "Tell the user briefly; the result will be delivered when it's ready, "
                 "at the start of their next call if needed."
             )
         else:
-            logger.info("execute late result: user=%s len=%d", user_id, len(result))
+            logger.info(
+                "execute late result: user=%s len=%d agent_task_time_s=%.1f",
+                user_id, len(result), time.monotonic() - task_start,
+            )
             instructions = (
                 "The result of the earlier background task just arrived. Relay it naturally "
                 f"as the answer to what the user asked:\n\n{result}"
