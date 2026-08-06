@@ -13,12 +13,22 @@ export interface SharedResources {
   agentVersion?: number;
 }
 
+export interface RecentTask {
+  ts: string;
+  prompt: string;
+  result: string;
+}
+
 export interface UserResources {
   memoryStoreId?: string;
   vaultId?: string;
   sessionId?: string;
   /** Task results that had no live channel to land on; drained at next call start. */
   pendingNotifications?: string[];
+  /** Rolling ledger of delegated tasks. Sessions are ephemeral (rotated per
+   * call); cross-call continuity is a briefing built from this ledger, not a
+   * replayed transcript. Also serves the app's Recent Tasks view. */
+  recentTasks?: RecentTask[];
 }
 
 export interface StoreShape {

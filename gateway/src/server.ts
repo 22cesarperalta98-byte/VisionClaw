@@ -3,10 +3,9 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
 import { config } from "./config.js";
-import { initStore } from "./store.js";
+import { initStore, saveStore, userResources } from "./store.js";
 import { ensureUser } from "./provision.js";
 import { runTurn, runTurnStreaming, queueContext, drainContext } from "./turn.js";
-import { listTasks } from "./tasks.js";
 import { registerSocket, notifyUser, queuePending, drainPending } from "./notify.js";
 import { registerConnectRoutes } from "./connect.js";
 
@@ -30,6 +29,34 @@ const SPAWN_ACK =
   "in your own words, that you're on it -- one short sentence, no promises about timing. " +
   "Do NOT answer the question yourself or guess at the content; the real result will arrive " +
   "shortly as a follow-up message for you to relay.";
+
+// ---------- task ledger (continuity without replayed history) ----------
+
+/** Append a finished task to the user's rolling ledger. Sessions are rotated
+ * per call, so this ledger -- not session history -- is what carries "did you
+ * find it?" across calls, and it feeds the app's Recent Tasks view. */
+async function recordTask(userId: string, prompt: string, result: string): Promise<void> {
+  const u = await userResources(userId);
+  u.recentTasks ??= [];
+  u.recentTasks.push({
+    ts: new Date().toISOString(),
+    prompt: prompt.slice(0, 300),
+    result: result.slice(0, 500),
+  });
+  if (u.recentTasks.length > 20) u.recentTasks = u.recentTasks.slice(-20);
+  await saveStore();
+}
+
+/** A few hundred tokens of curated context for a fresh session. */
+function buildBriefing(tasks: { ts: string; prompt: string; result: string }[]): string {
+  const lines = tasks
+    .slice(-5)
+    .map((t) => `- [${t.ts}] asked: ${t.prompt}\n  outcome: ${t.result}`)
+    .join("\n");
+  return (
+    "Background from the user's recent sessions (use only if they refer back to it):\n" + lines
+  );
+}
 
 // ---------- auth ----------
 
@@ -140,6 +167,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         if (!clientDone) res.write(chunk({ content: text }));
       });
       if (capTimer) clearTimeout(capTimer);
+      if (finalText) void recordTask(userId, lastUser, finalText);
       if (wasCappedBeforeFinal()) {
         if (finalText && !notifyUser(userId, finalText)) {
           console.warn(`[turn] late streamed result for ${userId} parked for next call`);
@@ -170,6 +198,7 @@ app.post("/v1/chat/completions", async (req, res) => {
       lastUser,
       isServiceCall ? 110_000 : config.spawnMode ? 0 : config.quickAnswerTimeoutMs,
       (lateText) => {
+        void recordTask(userId, lastUser, lateText);
         const delivered = notifyUser(userId, lateText);
         if (!delivered) {
           console.warn(`[turn] late result for ${userId} parked for next call`);
@@ -179,6 +208,7 @@ app.post("/v1/chat/completions", async (req, res) => {
       drainContext(userId),
     );
 
+    if (!result.deferred && result.text) void recordTask(userId, lastUser, result.text);
     const content = result.deferred
       ? config.spawnMode
         ? SPAWN_ACK
@@ -217,6 +247,15 @@ app.post("/livekit-token", async (req, res) => {
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     res.status(503).json({ error: { message: "LiveKit is not configured on this gateway" } });
     return;
+  }
+  // Ephemeral sessions: every call starts a fresh CMA session (created lazily
+  // on first task), briefed from the task ledger instead of dragging the old
+  // session's transcript -- prefill cost stays flat as usage accumulates.
+  const u = await userResources(userId);
+  if (u.sessionId) {
+    u.sessionId = undefined;
+    if (u.recentTasks?.length) queueContext(userId, buildBriefing(u.recentTasks));
+    await saveStore();
   }
   const { AccessToken } = await import("livekit-server-sdk");
   // The engine choice (gemini | openai) rides as participant metadata; the
@@ -268,7 +307,10 @@ app.post("/pending-notifications", async (req, res) => {
   res.sendStatus(204);
 });
 
-// Task history for the app's Recent Tasks view.
+// Task history for the app's Recent Tasks view -- served from the gateway's
+// own ledger. (The old implementation replayed the CMA session event log,
+// which silently froze once a session exceeded 500 events; sessions are also
+// ephemeral now, so no single session has the full history anyway.)
 app.get("/tasks", async (req, res) => {
   const userId = userFromRequest(req);
   if (!userId) {
@@ -276,13 +318,12 @@ app.get("/tasks", async (req, res) => {
     return;
   }
   const limit = Math.min(Number(req.query.limit ?? 20) || 20, 100);
-  try {
-    const { sessionId } = await ensureUser(userId);
-    res.json({ tasks: await listTasks(sessionId, limit) });
-  } catch (err) {
-    console.error("[tasks] listing failed:", err);
-    res.status(502).json({ error: { message: "agent backend error" } });
-  }
+  const u = await userResources(userId);
+  const tasks = (u.recentTasks ?? [])
+    .slice(-limit)
+    .reverse()
+    .map((t) => ({ id: `task_${t.ts}`, ts: t.ts, prompt: t.prompt, result: t.result }));
+  res.json({ tasks });
 });
 
 // Voice-session context handoff (summaries, what the user is looking at).

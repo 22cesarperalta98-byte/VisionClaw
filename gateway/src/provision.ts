@@ -15,6 +15,12 @@ Ground rules:
 - For multi-step work, start immediately and keep intermediate narration to a single short sentence.
 - If a task cannot be completed, say what you tried and what is missing, in one sentence.`;
 
+// Drift checks cost Anthropic API round-trips before every task; config only
+// changes on deploy, so verify at most once per interval per process.
+const RECONCILE_TTL_MS = 10 * 60 * 1000;
+let sharedVerifiedAt = 0;
+const sessionVerifiedAt = new Map<string, number>();
+
 /** Create the shared environment + agent once; IDs persist in the store. */
 export async function ensureShared(): Promise<{ agentId: string; environmentId: string }> {
   const store = await loadStore();
@@ -37,7 +43,8 @@ export async function ensureShared(): Promise<{ agentId: string; environmentId: 
     store.shared.agentId = agent.id;
     store.shared.agentVersion = agent.version;
     console.log("[provision] agent created:", agent.id, "version", agent.version);
-  } else {
+  } else if (Date.now() - sharedVerifiedAt > RECONCILE_TTL_MS) {
+    sharedVerifiedAt = Date.now();
     // Reconcile: adding an app to the registry must reach an agent that already
     // exists, or its new tools are silently missing. Version-bump only on drift.
     const agent = await anthropic.beta.agents.retrieve(store.shared.agentId);
@@ -154,7 +161,9 @@ export async function ensureUser(userId: string): Promise<UserResources & { sess
     console.log(`[provision] vault for ${userId}:`, vault.id);
   }
 
-  if (!u.sessionId || !(await sessionUsable(u.sessionId))) {
+  const verifiedAt = u.sessionId ? (sessionVerifiedAt.get(u.sessionId) ?? 0) : 0;
+  const needsCheck = Date.now() - verifiedAt > RECONCILE_TTL_MS;
+  if (!u.sessionId || (needsCheck && !(await sessionUsable(u.sessionId)))) {
     const session = await anthropic.beta.sessions.create({
       agent: agentId,
       environment_id: environmentId,
@@ -162,10 +171,12 @@ export async function ensureUser(userId: string): Promise<UserResources & { sess
       vault_ids: [u.vaultId],
     });
     u.sessionId = session.id;
+    sessionVerifiedAt.set(session.id, Date.now());
     console.log(`[provision] session for ${userId}:`, session.id);
-  } else {
+  } else if (needsCheck) {
+    sessionVerifiedAt.set(u.sessionId, Date.now());
     // A live session keeps the tool slate it was created with, so newly added
-    // apps need a session-local update too. History and memory are preserved.
+    // apps need a session-local update too. History is preserved.
     try {
       const live = await anthropic.beta.sessions.retrieve(u.sessionId);
       const have = appSignature(live.agent?.mcp_servers ?? [], live.agent?.tools ?? []);
@@ -176,9 +187,6 @@ export async function ensureUser(userId: string): Promise<UserResources & { sess
         });
         console.log(`[provision] session apps reconciled for ${userId}`);
       }
-      // Memory-store mounts carry no resource id, so they cannot be deleted
-      // from a live session; sessions from before the 2026-08-06 memory
-      // removal keep their mount until the session is recreated.
     } catch (err) {
       console.warn(`[provision] could not reconcile session apps for ${userId}:`, err);
     }
