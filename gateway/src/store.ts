@@ -29,6 +29,10 @@ export interface UserResources {
    * call); cross-call continuity is a briefing built from this ledger, not a
    * replayed transcript. Also serves the app's Recent Tasks view. */
   recentTasks?: RecentTask[];
+  /** True once the current session has run a turn. Untouched sessions are
+   * reused instead of rotated -- rotating them would re-queue briefings that
+   * pile up across calls that never delegate a task. */
+  sessionUsed?: boolean;
 }
 
 export interface StoreShape {

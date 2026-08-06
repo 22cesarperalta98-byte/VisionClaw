@@ -32,6 +32,16 @@ const SPAWN_ACK =
 
 // ---------- task ledger (continuity without replayed history) ----------
 
+/** Mark the user's current session as having run a turn; only used sessions
+ * rotate at the next call. Persisted immediately so failed turns count too. */
+async function markSessionUsed(userId: string): Promise<void> {
+  const u = await userResources(userId);
+  if (!u.sessionUsed) {
+    u.sessionUsed = true;
+    await saveStore();
+  }
+}
+
 /** Append a finished task to the user's rolling ledger. Sessions are rotated
  * per call, so this ledger -- not session history -- is what carries "did you
  * find it?" across calls, and it feeds the app's Recent Tasks view. */
@@ -111,6 +121,7 @@ app.post("/v1/chat/completions", async (req, res) => {
     let sessionId: string;
     try {
       ({ sessionId } = await ensureUser(userId));
+      await markSessionUsed(userId);
     } catch (err) {
       console.error("[chat] provisioning failed:", err);
       res.status(502).json({ error: { message: "agent backend error" } });
@@ -186,6 +197,7 @@ app.post("/v1/chat/completions", async (req, res) => {
 
   try {
     const { sessionId } = await ensureUser(userId);
+    await markSessionUsed(userId);
     // The agent worker (service token) blocks on its own tool timeout and
     // relays the finished answer into the voice session -- handing IT the
     // spawn-mode acknowledgement would make the assistant read a status
@@ -248,12 +260,15 @@ app.post("/livekit-token", async (req, res) => {
     res.status(503).json({ error: { message: "LiveKit is not configured on this gateway" } });
     return;
   }
-  // Ephemeral sessions: every call starts a fresh CMA session (created lazily
-  // on first task), briefed from the task ledger instead of dragging the old
-  // session's transcript -- prefill cost stays flat as usage accumulates.
+  // Ephemeral sessions: every call starts a fresh CMA session, briefed from
+  // the task ledger instead of dragging the old session's transcript --
+  // prefill cost stays flat as usage accumulates. Sessions that never ran a
+  // turn are reused as-is: their briefing is still queued, and rotating them
+  // would stack a second one (the API allows one system.message per turn).
   const u = await userResources(userId);
-  if (u.sessionId) {
+  if (u.sessionId && u.sessionUsed) {
     u.sessionId = undefined;
+    u.sessionUsed = false;
     if (u.recentTasks?.length) queueContext(userId, buildBriefing(u.recentTasks));
     await saveStore();
   }

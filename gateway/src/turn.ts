@@ -52,12 +52,18 @@ async function clearPendingActions(sessionId: string): Promise<void> {
 
 /** Send a turn, self-healing if the session is parked on an unanswered confirmation. */
 async function sendUserTurn(sessionId: string, userText: string, contextNotes: string[]): Promise<void> {
+  // The API accepts at most ONE system.message per request, so however many
+  // notes queued up between turns, they travel as a single joined event.
   const events = [
     { type: "user.message" as const, content: [{ type: "text" as const, text: userText }] },
-    ...contextNotes.map((note) => ({
-      type: "system.message" as const,
-      content: [{ type: "text" as const, text: note }],
-    })),
+    ...(contextNotes.length > 0
+      ? [
+          {
+            type: "system.message" as const,
+            content: [{ type: "text" as const, text: contextNotes.join("\n\n") }],
+          },
+        ]
+      : []),
   ];
   try {
     await anthropic.beta.sessions.events.send(sessionId, { events });
