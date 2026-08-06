@@ -9,8 +9,6 @@ The user talks to a real-time voice layer; that layer delegates tasks to you and
 Ground rules:
 - Reply in plain spoken prose. No markdown, no headers, no bullet lists, no URLs read out character by character.
 - Lead with the answer in one or two sentences. Add detail only when the task genuinely needs it.
-- You have a mounted memory directory about the owner. Check it before tasks that depend on their preferences,
-  people, or ongoing threads, and append new durable facts as you learn them. Never store secrets there.
 - Connected apps (calendar and similar) appear as tools when the owner has linked them. If a tool reports that
   authorization is required, do not retry it and never read a URL aloud: say in one sentence that the app needs to be
   connected in the app's settings, and carry on with what you can do.
@@ -48,14 +46,18 @@ export async function ensureShared(): Promise<{ agentId: string; environmentId: 
     const appsDrifted =
       appSignature(agent.mcp_servers ?? [], agent.tools ?? []) !== appSignature(mcpServers(), agentTools());
     const modelDrifted = modelSignature(agent.model) !== modelSignature(wantModel());
-    if (appsDrifted || modelDrifted) {
+    const systemDrifted = (agent.system ?? "") !== AGENT_SYSTEM_PROMPT;
+    if (appsDrifted || modelDrifted || systemDrifted) {
       const updated = await anthropic.beta.agents.update(store.shared.agentId, {
         mcp_servers: mcpServers(),
         tools: agentTools(),
         model: wantModel(),
+        system: AGENT_SYSTEM_PROMPT,
       });
       store.shared.agentVersion = updated.version;
-      const what = [appsDrifted && "apps", modelDrifted && "model"].filter(Boolean).join(" + ");
+      const what = [appsDrifted && "apps", modelDrifted && "model", systemDrifted && "system"]
+        .filter(Boolean)
+        .join(" + ");
       console.log(`[provision] agent ${what} reconciled, version`, updated.version);
     }
   }
@@ -134,24 +136,17 @@ async function sessionUsable(sessionId: string): Promise<boolean> {
 }
 
 /**
- * Lazily provision a user's memory store, vault, and long-lived session.
- * Continuity lives in the memory store: if the session ever terminates, a new
- * one is created with the same store mounted.
+ * Lazily provision a user's vault and long-lived session.
+ *
+ * Memory stores are deliberately NOT provisioned or mounted (2026-08-06): the
+ * agent dutifully wrote owner notes mid-task, putting 5-10s of bookkeeping on
+ * the critical path of a voice answer. Existing memoryStoreId values in the
+ * store are kept but unused; re-mounting is one resources entry away if a
+ * memory feature earns its latency.
  */
-export async function ensureUser(userId: string): Promise<Required<UserResources>> {
+export async function ensureUser(userId: string): Promise<UserResources & { sessionId: string; vaultId: string }> {
   const { agentId, environmentId } = await ensureShared();
   const u = await userResources(userId);
-
-  if (!u.memoryStoreId) {
-    const memStore = await anthropic.beta.memoryStores.create({
-      name: `visionclaw-memory-${userId}`,
-      description:
-        "Long-term memory about the owner: preferences, people, places, routines, and ongoing threads. " +
-        "Read before starting tasks; append durable new facts. Never store credentials or secrets.",
-    });
-    u.memoryStoreId = memStore.id;
-    console.log(`[provision] memory store for ${userId}:`, memStore.id);
-  }
 
   if (!u.vaultId) {
     const vault = await anthropic.beta.vaults.create({ display_name: `visionclaw-vault-${userId}` });
@@ -165,15 +160,6 @@ export async function ensureUser(userId: string): Promise<Required<UserResources
       environment_id: environmentId,
       title: `visionclaw:${userId}`,
       vault_ids: [u.vaultId],
-      resources: [
-        {
-          type: "memory_store",
-          memory_store_id: u.memoryStoreId,
-          access: "read_write",
-          instructions:
-            "Your long-term memory about the owner. Check it before tasks; write durable facts back as you learn them.",
-        },
-      ],
     });
     u.sessionId = session.id;
     console.log(`[provision] session for ${userId}:`, session.id);
@@ -190,11 +176,22 @@ export async function ensureUser(userId: string): Promise<Required<UserResources
         });
         console.log(`[provision] session apps reconciled for ${userId}`);
       }
+      // Unmount memory from sessions created before the 2026-08-06 removal;
+      // deleting the resource keeps the session's conversation history.
+      for await (const res of anthropic.beta.sessions.resources.list(u.sessionId)) {
+        if (res.type === "memory_store") {
+          // SDK type gap: the memory_store variant omits the resource id the
+          // API actually returns (its sibling variants declare it).
+          const resourceId = (res as { id?: string }).id ?? res.memory_store_id;
+          await anthropic.beta.sessions.resources.delete(resourceId, { session_id: u.sessionId });
+          console.log(`[provision] memory store unmounted from session for ${userId}`);
+        }
+      }
     } catch (err) {
       console.warn(`[provision] could not reconcile session apps for ${userId}:`, err);
     }
   }
 
   await saveStore();
-  return u as Required<UserResources>;
+  return u as UserResources & { sessionId: string; vaultId: string };
 }
