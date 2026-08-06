@@ -102,8 +102,10 @@ async def quick_search(ctx: RunContext[Userdata], query: str) -> str:
 
 # How long a tool call may hold the model's turn open before the answer is
 # demoted to a follow-up. Past this, users assume the call is dead and hang up
-# -- which kills the session, the tool call, and the answer with it.
-QUICK_ANSWER_S = 8
+# -- which kills the session, the tool call, and the answer with it. Simple
+# CMA tasks measure 8-9s on fresh sessions; 10 keeps them one clean answer
+# instead of a progress beat plus a follow-up.
+QUICK_ANSWER_S = 10
 
 # While a slow task runs, keep the channel alive with brief spoken progress
 # notes: a working agent should never be indistinguishable from a dead one.
