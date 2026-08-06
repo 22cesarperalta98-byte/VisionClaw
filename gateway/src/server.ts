@@ -257,6 +257,10 @@ app.post("/livekit-token", async (req, res) => {
     if (u.recentTasks?.length) queueContext(userId, buildBriefing(u.recentTasks));
     await saveStore();
   }
+  // Pre-warm: session creation costs ~3-4s, which on a lazy path lands on the
+  // call's first task. Kicking it off now hides the cold start behind call
+  // setup and greeting time.
+  void ensureUser(userId).catch((err) => console.warn(`[provision] pre-warm failed for ${userId}:`, err));
   const { AccessToken } = await import("livekit-server-sdk");
   // The engine choice (gemini | openai) rides as participant metadata; the
   // worker reads it when the user joins and picks the realtime model.
