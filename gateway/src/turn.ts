@@ -51,11 +51,29 @@ async function clearPendingActions(sessionId: string): Promise<void> {
 }
 
 /** Send a turn, self-healing if the session is parked on an unanswered confirmation. */
-async function sendUserTurn(sessionId: string, userText: string, contextNotes: string[]): Promise<void> {
-  // The API accepts at most ONE system.message per request, so however many
-  // notes queued up between turns, they travel as a single joined event.
+async function sendUserTurn(
+  sessionId: string,
+  userText: string,
+  contextNotes: string[],
+  imageBase64?: string,
+): Promise<void> {
+  // The user turn is text plus, optionally, what the user is looking at: the
+  // voice layer attaches the current camera frame when the task refers to
+  // something visible, so the agent reads pixels instead of a lossy verbal
+  // description. The API accepts at most ONE system.message per request, so
+  // however many notes queued up between turns, they travel as a single event.
+  const userContent: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+  > = [{ type: "text", text: userText }];
+  if (imageBase64) {
+    userContent.push({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: imageBase64 },
+    });
+  }
   const events = [
-    { type: "user.message" as const, content: [{ type: "text" as const, text: userText }] },
+    { type: "user.message" as const, content: userContent },
     ...(contextNotes.length > 0
       ? [
           {
@@ -97,12 +115,13 @@ export async function runTurn(
   maxWaitMs: number,
   onLateResult: (text: string) => void,
   contextNotes: string[] = [],
+  imageBase64?: string,
 ): Promise<TurnResult> {
   const stream = await anthropic.beta.sessions.events.stream(sessionId);
 
   // system.message events are only accepted immediately after a user.message
   // in the same request, so queued context rides along with the next turn.
-  await sendUserTurn(sessionId, userText, contextNotes);
+  await sendUserTurn(sessionId, userText, contextNotes, imageBase64);
 
   const parts: string[] = [];
   let timedOut = false;

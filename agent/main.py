@@ -18,6 +18,8 @@ OPENAI_REALTIME_MODEL.
 """
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import os
@@ -27,6 +29,8 @@ from dataclasses import dataclass
 import aiohttp
 from google import genai
 from google.genai import types as genai_types
+from livekit import rtc
+from PIL import Image
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -53,12 +57,41 @@ just relay the result. This includes looking up things you can see on camera.
 For anything requiring action or multi-step work -- messages, lists, reminders, calendars,
 research, smart home -- use the execute tool. Speak a brief natural acknowledgment BEFORE
 calling it, never call it silently. Results may arrive as a follow-up; relay them as the
-answer to what was asked, not as a notification."""
+answer to what was asked, not as a notification. If the task is about something the user
+is showing on camera, set attach_view=true so the actual image travels with the task --
+still describe what you see in the task text as well."""
+
+
+class FrameHolder:
+    """Most recent camera frame from the user's video track. When the user
+    freezes/pins a frame, the phone mutes the track, so the pinned frame stays
+    the latest one here -- pin semantics carry through to attached images."""
+
+    def __init__(self) -> None:
+        self.frame: rtc.VideoFrame | None = None
+        self.rotation: int = 0
+
+
+def encode_latest_frame(holder: FrameHolder) -> str | None:
+    """JPEG-encode the latest frame (capped at 1024px, rotation applied) as base64."""
+    frame = holder.frame
+    if frame is None:
+        return None
+    rgba = frame.convert(rtc.VideoBufferType.RGBA)
+    img = Image.frombuffer("RGBA", (rgba.width, rgba.height), bytes(rgba.data)).convert("RGB")
+    rot = holder.rotation % 360
+    if rot:
+        img = img.rotate(-rot, expand=True)
+    img.thumbnail((1024, 1024))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=80)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 @dataclass
 class Userdata:
     user_id: str
+    frames: FrameHolder
 
 
 _search_client: genai.Client | None = None
@@ -130,12 +163,15 @@ def _gateway_url() -> str:
     return os.environ["GATEWAY_URL"].rstrip("/")
 
 
-async def _gateway_execute(user_id: str, task: str) -> str:
+async def _gateway_execute(user_id: str, task: str, image_b64: str | None = None) -> str:
+    payload: dict = {"messages": [{"role": "user", "content": task}]}
+    if image_b64:
+        payload["image"] = image_b64
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{_gateway_url()}/v1/chat/completions",
             headers=_gateway_headers(user_id),
-            json={"messages": [{"role": "user", "content": task}]},
+            json=payload,
             timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
             body = await resp.json()
@@ -180,14 +216,24 @@ async def _drain_pending(user_id: str) -> list[str]:
 
 
 @function_tool
-async def execute(ctx: RunContext[Userdata], task: str) -> str:
+async def execute(ctx: RunContext[Userdata], task: str, attach_view: bool = False) -> str:
     """Delegate an action or lookup to the user's personal action agent: sending
     messages, web search, managing lists and reminders, Google Calendar, research,
     notes, smart home control. Describe the task completely, with names, content
-    and platforms."""
-    logger.info("execute start: user=%s task=%r", ctx.userdata.user_id, task[:200])
+    and platforms. Set attach_view=true when the task concerns something the user
+    is showing on camera: the current camera frame is then attached so the agent
+    can read it directly (labels, receipts, flyers, dense text)."""
+    # Eval override: "never"/"always" force the A/B conditions; "auto" (default)
+    # leaves the decision to the voice model's attach_view judgment.
+    mode = os.environ.get("ATTACH_VIEW_MODE", "auto")
+    should_attach = attach_view if mode == "auto" else (mode == "always")
+    image_b64 = encode_latest_frame(ctx.userdata.frames) if should_attach else None
+    logger.info(
+        "execute start: user=%s attach_view=%s image_kb=%d task=%r",
+        ctx.userdata.user_id, attach_view, len(image_b64 or "") * 3 // 4096, task[:200],
+    )
     task_start = time.monotonic()
-    job = asyncio.ensure_future(_gateway_execute(ctx.userdata.user_id, task))
+    job = asyncio.ensure_future(_gateway_execute(ctx.userdata.user_id, task, image_b64))
     done, _ = await asyncio.wait({job}, timeout=QUICK_ANSWER_S)
     if done:
         result = await job
@@ -288,6 +334,33 @@ def build_llm(engine: str):
     )
 
 
+def _watch_video(ctx: JobContext, holder: FrameHolder) -> None:
+    """Keep holder current with the user's camera. Runs beside the realtime
+    model's own video consumption; this copy exists so tool calls can attach
+    the exact frame the user is looking at."""
+
+    def start_reader(track: rtc.Track) -> None:
+        async def read() -> None:
+            stream = rtc.VideoStream(track)
+            async for ev in stream:
+                holder.frame = ev.frame
+                holder.rotation = int(getattr(ev, "rotation", 0) or 0)
+
+        t = asyncio.create_task(read())
+        _relay_tasks.add(t)
+        t.add_done_callback(_relay_tasks.discard)
+
+    @ctx.room.on("track_subscribed")
+    def _on_track(track: rtc.Track, publication: rtc.TrackPublication, participant: rtc.RemoteParticipant) -> None:
+        if track.kind == rtc.TrackKind.KIND_VIDEO:
+            start_reader(track)
+
+    for p in ctx.room.remote_participants.values():
+        for pub in p.track_publications.values():
+            if pub.track is not None and pub.track.kind == rtc.TrackKind.KIND_VIDEO:
+                start_reader(pub.track)
+
+
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
@@ -303,9 +376,12 @@ async def entrypoint(ctx: JobContext):
     user_id = participant.identity or "demo"
     logger.info("session start: user=%s engine=%s", user_id, engine)
 
+    frames = FrameHolder()
+    _watch_video(ctx, frames)
+
     session = AgentSession(
         llm=build_llm(engine),
-        userdata=Userdata(user_id=user_id),
+        userdata=Userdata(user_id=user_id, frames=frames),
     )
 
     await session.start(

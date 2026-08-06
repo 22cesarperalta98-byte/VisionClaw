@@ -12,7 +12,8 @@ import { registerConnectRoutes } from "./connect.js";
 initStore(config.storePath);
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+// 5mb: task requests may carry a base64 camera frame (~200-400KB typical).
+app.use(express.json({ limit: "5mb" }));
 
 /**
  * What the voice model receives the instant a task is spawned.
@@ -204,6 +205,8 @@ app.post("/v1/chat/completions", async (req, res) => {
     // message aloud. Spawn semantics are for the app's own HTTP calls.
     const bearer = req.header("authorization")?.slice("Bearer ".length).trim();
     const isServiceCall = !!config.serviceToken && bearer === config.serviceToken;
+    // What the user is looking at, when the voice layer judged it relevant.
+    const image = typeof req.body?.image === "string" && req.body.image ? req.body.image : undefined;
     // The session owns durable history; only the newest user turn is sent.
     const result = await runTurn(
       sessionId,
@@ -218,6 +221,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         }
       },
       drainContext(userId),
+      image,
     );
 
     if (!result.deferred && result.text) void recordTask(userId, lastUser, result.text);
