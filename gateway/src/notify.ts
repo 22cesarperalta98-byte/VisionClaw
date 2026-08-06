@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import { saveStore, userResources } from "./store.js";
 
 /**
  * Registry of connected app sockets per user, plus helpers that emit events in
@@ -48,4 +49,30 @@ export function notifyScheduled(userId: string, summary: string): boolean {
     event: "cron",
     payload: { action: "finished", summary },
   });
+}
+
+// ---------- parked results (no live channel at delivery time) ----------
+
+const MAX_PENDING = 20;
+
+/** Park a result that had nowhere to land (call over, no client connected).
+ * The voice worker drains these at the start of the user's next call and
+ * speaks them, so a hangup no longer discards a finished task's answer. */
+export async function queuePending(userId: string, text: string): Promise<void> {
+  const user = await userResources(userId);
+  user.pendingNotifications ??= [];
+  user.pendingNotifications.push(text);
+  if (user.pendingNotifications.length > MAX_PENDING) {
+    user.pendingNotifications = user.pendingNotifications.slice(-MAX_PENDING);
+  }
+  await saveStore();
+}
+
+export async function drainPending(userId: string): Promise<string[]> {
+  const user = await userResources(userId);
+  const pending = user.pendingNotifications ?? [];
+  if (pending.length === 0) return [];
+  user.pendingNotifications = [];
+  await saveStore();
+  return pending;
 }

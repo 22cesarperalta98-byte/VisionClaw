@@ -17,6 +17,8 @@ export interface UserResources {
   memoryStoreId?: string;
   vaultId?: string;
   sessionId?: string;
+  /** Task results that had no live channel to land on; drained at next call start. */
+  pendingNotifications?: string[];
 }
 
 export interface StoreShape {

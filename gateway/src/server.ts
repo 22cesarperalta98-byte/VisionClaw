@@ -7,7 +7,7 @@ import { initStore } from "./store.js";
 import { ensureUser } from "./provision.js";
 import { runTurn, runTurnStreaming, queueContext, drainContext } from "./turn.js";
 import { listTasks } from "./tasks.js";
-import { registerSocket, notifyUser } from "./notify.js";
+import { registerSocket, notifyUser, queuePending, drainPending } from "./notify.js";
 import { registerConnectRoutes } from "./connect.js";
 
 initStore(config.storePath);
@@ -142,7 +142,8 @@ app.post("/v1/chat/completions", async (req, res) => {
       if (capTimer) clearTimeout(capTimer);
       if (wasCappedBeforeFinal()) {
         if (finalText && !notifyUser(userId, finalText)) {
-          console.warn(`[turn] late streamed result for ${userId} had no connected client`);
+          console.warn(`[turn] late streamed result for ${userId} parked for next call`);
+          void queuePending(userId, finalText);
         }
       } else {
         finishClient();
@@ -170,7 +171,10 @@ app.post("/v1/chat/completions", async (req, res) => {
       isServiceCall ? 110_000 : config.spawnMode ? 0 : config.quickAnswerTimeoutMs,
       (lateText) => {
         const delivered = notifyUser(userId, lateText);
-        if (!delivered) console.warn(`[turn] late result for ${userId} had no connected client`);
+        if (!delivered) {
+          console.warn(`[turn] late result for ${userId} parked for next call`);
+          void queuePending(userId, lateText);
+        }
       },
       drainContext(userId),
     );
@@ -232,6 +236,34 @@ app.post("/livekit-token", async (req, res) => {
 // by design -- the ipa is development-signed and installs only on provisioned
 // devices, and install links need to work without typing a token on a phone.
 app.use("/install", express.static("/data/ota", { index: "install.html" }));
+
+// Parked task results: answers that finished after their call ended. The voice
+// worker drains this at call start and speaks them; it can also park a result
+// it was holding when the user hung up. Draining is destructive by design --
+// each result is spoken exactly once.
+app.get("/pending-notifications", async (req, res) => {
+  const userId = userFromRequest(req);
+  if (!userId) {
+    res.status(401).json({ error: { message: "invalid or missing gateway token" } });
+    return;
+  }
+  res.json({ notifications: await drainPending(userId) });
+});
+
+app.post("/pending-notifications", async (req, res) => {
+  const userId = userFromRequest(req);
+  if (!userId) {
+    res.status(401).json({ error: { message: "invalid or missing gateway token" } });
+    return;
+  }
+  const text = String(req.body?.text ?? "").trim();
+  if (!text) {
+    res.status(400).json({ error: { message: "text is required" } });
+    return;
+  }
+  await queuePending(userId, text);
+  res.sendStatus(204);
+});
 
 // Task history for the app's Recent Tasks view.
 app.get("/tasks", async (req, res) => {

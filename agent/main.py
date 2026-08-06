@@ -57,7 +57,12 @@ class Userdata:
 # How long a tool call may hold the model's turn open before the answer is
 # demoted to a follow-up. Past this, users assume the call is dead and hang up
 # -- which kills the session, the tool call, and the answer with it.
-QUICK_ANSWER_S = 18
+QUICK_ANSWER_S = 8
+
+# While a slow task runs, keep the channel alive with brief spoken progress
+# notes: a working agent should never be indistinguishable from a dead one.
+HEARTBEAT_S = 30
+MAX_HEARTBEATS = 4
 
 # The gateway echoes this ack when a task outlives its own 110s wait; it is an
 # instruction blob for a voice model, not an answer, so never relay it as one.
@@ -66,16 +71,22 @@ GATEWAY_DEFERRAL_PREFIX = "[task started]"
 _relay_tasks: set[asyncio.Task] = set()
 
 
+def _gateway_headers(user_id: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {os.environ['GATEWAY_SERVICE_TOKEN']}",
+        "X-User-Id": user_id,
+    }
+
+
+def _gateway_url() -> str:
+    return os.environ["GATEWAY_URL"].rstrip("/")
+
+
 async def _gateway_execute(user_id: str, task: str) -> str:
-    gateway = os.environ["GATEWAY_URL"].rstrip("/")
-    token = os.environ["GATEWAY_SERVICE_TOKEN"]
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{gateway}/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "X-User-Id": user_id,
-            },
+            f"{_gateway_url()}/v1/chat/completions",
+            headers=_gateway_headers(user_id),
             json={"messages": [{"role": "user", "content": task}]},
             timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
@@ -85,6 +96,39 @@ async def _gateway_execute(user_id: str, task: str) -> str:
     except (KeyError, IndexError):
         logger.warning("gateway returned unexpected shape: %s", json.dumps(body)[:300])
         return "The action agent returned an unexpected response."
+
+
+async def _park_result(user_id: str, task: str, result: str) -> None:
+    """Hand a result we can no longer speak (call over) back to the gateway;
+    the next call's worker drains and delivers it."""
+    text = f"A task from an earlier call finished. Task: {task[:200]}\nResult: {result}"
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                f"{_gateway_url()}/pending-notifications",
+                headers=_gateway_headers(user_id),
+                json={"text": text},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                resp.raise_for_status()
+        logger.info("parked result for next call: user=%s", user_id)
+    except Exception:
+        logger.exception("failed to park result: user=%s", user_id)
+
+
+async def _drain_pending(user_id: str) -> list[str]:
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                f"{_gateway_url()}/pending-notifications",
+                headers=_gateway_headers(user_id),
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                body = await resp.json()
+        return [str(n) for n in body.get("notifications") or []]
+    except Exception:
+        logger.exception("pending drain failed: user=%s", user_id)
+        return []
 
 
 @function_tool
@@ -101,29 +145,52 @@ async def execute(ctx: RunContext[Userdata], task: str) -> str:
         logger.info("execute quick result: user=%s len=%d", ctx.userdata.user_id, len(result))
         return result
 
-    # Slow path: free the model to keep talking, then speak the result when it
-    # lands. If the user hangs up first the reply fails here (logged), but the
-    # answer survives in their CMA session -- asking again next call is instant.
+    # Slow path: free the model to keep talking, heartbeat while the task runs,
+    # then speak the result when it lands. If the user hangs up first, the
+    # result is parked at the gateway and delivered at the start of their next
+    # call instead of being discarded.
     session = ctx.session
+    user_id = ctx.userdata.user_id
 
     async def relay() -> None:
+        heartbeats = 0
+        while True:
+            done, _ = await asyncio.wait({job}, timeout=HEARTBEAT_S)
+            if done:
+                break
+            if heartbeats < MAX_HEARTBEATS:
+                heartbeats += 1
+                try:
+                    session.generate_reply(
+                        instructions=(
+                            "The background task is still running. Give a very brief progress "
+                            "note -- a few words at most, woven into the conversation, not an "
+                            "announcement."
+                        )
+                    )
+                except Exception:
+                    # Session gone; stop talking but keep waiting so the result can be parked.
+                    heartbeats = MAX_HEARTBEATS
         try:
             result = await job
         except Exception:
-            logger.exception("execute background task failed: user=%s", ctx.userdata.user_id)
+            logger.exception("execute background task failed: user=%s", user_id)
             result = None
         if result is None:
             instructions = (
                 "The background task failed. Tell the user briefly and offer to try again."
             )
         elif result.startswith(GATEWAY_DEFERRAL_PREFIX):
-            logger.info("execute deferred past gateway wait: user=%s", ctx.userdata.user_id)
+            # Past the gateway's own wait the result is no longer in our hands;
+            # when it lands with no client connected, the gateway parks it itself.
+            logger.info("execute deferred past gateway wait: user=%s", user_id)
             instructions = (
                 "The background task is taking longer than expected and is still running. "
-                "Tell the user briefly; they can ask for the result in a bit."
+                "Tell the user briefly; the result will be delivered when it's ready, "
+                "at the start of their next call if needed."
             )
         else:
-            logger.info("execute late result: user=%s len=%d", ctx.userdata.user_id, len(result))
+            logger.info("execute late result: user=%s len=%d", user_id, len(result))
             instructions = (
                 "The result of the earlier background task just arrived. Relay it naturally "
                 f"as the answer to what the user asked:\n\n{result}"
@@ -131,7 +198,9 @@ async def execute(ctx: RunContext[Userdata], task: str) -> str:
         try:
             session.generate_reply(instructions=instructions)
         except Exception:
-            logger.warning("execute result arrived after session closed: user=%s", ctx.userdata.user_id)
+            logger.warning("session closed before result could be spoken: user=%s", user_id)
+            if result is not None and not result.startswith(GATEWAY_DEFERRAL_PREFIX):
+                await _park_result(user_id, task, result)
 
     t = asyncio.create_task(relay())
     _relay_tasks.add(t)
@@ -185,6 +254,22 @@ async def entrypoint(ctx: JobContext):
         # asked what it sees.
         room_input_options=RoomInputOptions(video_enabled=True),
     )
+
+    # Results that finished after a previous call ended are waiting at the
+    # gateway; deliver them up front so a hangup never discards an answer.
+    pending = await _drain_pending(user_id)
+    if pending:
+        logger.info("delivering parked results: user=%s count=%d", user_id, len(pending))
+        joined = "\n\n".join(pending)
+        try:
+            session.generate_reply(
+                instructions=(
+                    "Tasks the user started during an earlier call finished while they were "
+                    "away. Greet them briefly and relay the results naturally:\n\n" + joined
+                )
+            )
+        except Exception:
+            logger.exception("failed to deliver parked results: user=%s content=%s", user_id, joined[:500])
 
 
 if __name__ == "__main__":
