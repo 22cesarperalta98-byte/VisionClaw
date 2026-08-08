@@ -1,4 +1,4 @@
-name: Build VisionClaw iOS - Gemini Direct
+name: Build VisionClaw iOS - Fixed Meta Callback
 
 on:
   workflow_dispatch:
@@ -8,7 +8,6 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      # Download a known working VisionClaw revision
       - name: Checkout VisionClaw
         uses: actions/checkout@v4
         with:
@@ -16,17 +15,11 @@ jobs:
           ref: d105a39fa050dda82905babd0ba830c18bb2f9d2
           fetch-depth: 1
 
-      # Create the private Secrets.swift using your GitHub secret
       - name: Create Secrets.swift
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -e
-
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "ERROR: GEMINI_API_KEY GitHub secret is missing."
-            exit 1
-          fi
 
           cp \
             samples/CameraAccess/CameraAccess/Secrets.swift.example \
@@ -36,10 +29,7 @@ jobs:
           import os
           from pathlib import Path
 
-          path = Path(
-              "samples/CameraAccess/CameraAccess/Secrets.swift"
-          )
-
+          path = Path("samples/CameraAccess/CameraAccess/Secrets.swift")
           text = path.read_text()
 
           key = os.environ["GEMINI_API_KEY"].strip()
@@ -47,44 +37,75 @@ jobs:
           if not key:
               raise SystemExit("GEMINI_API_KEY is empty")
 
-          text = text.replace(
-              "YOUR_GEMINI_API_KEY",
-              key
-          )
-
+          text = text.replace("YOUR_GEMINI_API_KEY", key)
           path.write_text(text)
           PY
 
-      # Make sure the key was actually inserted
-      # This does NOT print your key
-      - name: Verify Gemini configuration
+      - name: Fix Meta callback URL
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          path = Path("samples/CameraAccess/CameraAccess/Info.plist")
+
+          with path.open("rb") as f:
+              plist = plistlib.load(f)
+
+          plist["CFBundleURLTypes"] = [
+              {
+                  "CFBundleTypeRole": "Editor",
+                  "CFBundleURLName": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+                  "CFBundleURLSchemes": [
+                      "cameraaccess",
+                      "visionclaw"
+                  ]
+              }
+          ]
+
+          if "MWDAT" not in plist:
+              plist["MWDAT"] = {}
+
+          plist["MWDAT"]["AppLinkURLScheme"] = "cameraaccess://"
+
+          with path.open("wb") as f:
+              plistlib.dump(plist, f, sort_keys=False)
+
+          print("Fixed callback schemes:")
+          print(plist["CFBundleURLTypes"])
+          print("MWDAT callback:", plist["MWDAT"]["AppLinkURLScheme"])
+          PY
+
+      - name: Verify configuration
         run: |
           set -e
 
-          FILE="samples/CameraAccess/CameraAccess/Secrets.swift"
+          SECRETS="samples/CameraAccess/CameraAccess/Secrets.swift"
+          PLIST="samples/CameraAccess/CameraAccess/Info.plist"
 
-          if grep -q "YOUR_GEMINI_API_KEY" "$FILE"; then
-            echo "ERROR: Gemini API key was not inserted."
+          if grep -q "YOUR_GEMINI_API_KEY" "$SECRETS"; then
+            echo "Gemini key was not inserted"
             exit 1
           fi
 
-          echo "Gemini API key configured successfully."
+          /usr/libexec/PlistBuddy \
+            -c "Print :MWDAT:AppLinkURLScheme" \
+            "$PLIST"
 
-      # Resolve Apple's Swift package dependencies
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleURLTypes" \
+            "$PLIST"
+
       - name: Resolve packages
         run: |
           xcodebuild \
             -resolvePackageDependencies \
             -project samples/CameraAccess/CameraAccess.xcodeproj
 
-      # Clean anything left over
-      - name: Clean build
+      - name: Clean
         run: |
-          rm -rf build
-          rm -rf Payload
-          rm -f VisionClaw.ipa
+          rm -rf build Payload VisionClaw.ipa
 
-      # Compile unsigned iPhone app
       - name: Build VisionClaw
         run: |
           set -o pipefail
@@ -101,34 +122,20 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      # Convert the .app into an IPA for SideStore
       - name: Create IPA
         run: |
           set -e
 
           APP="build/Build/Products/Release-iphoneos/CameraAccess.app"
 
-          if [ ! -d "$APP" ]; then
-            echo "ERROR: CameraAccess.app was not created."
-            exit 1
-          fi
-
           mkdir -p Payload
           cp -R "$APP" Payload/
 
           zip -qry VisionClaw.ipa Payload
 
-          if [ ! -f VisionClaw.ipa ]; then
-            echo "ERROR: IPA creation failed."
-            exit 1
-          fi
-
-          echo "VisionClaw.ipa created successfully."
-
-      # Give you the finished IPA
-      - name: Upload VisionClaw IPA
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Gemini-Direct
+          name: VisionClaw-Fixed-Meta
           path: VisionClaw.ipa
           if-no-files-found: error
