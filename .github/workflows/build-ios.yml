@@ -1,4 +1,4 @@
-name: Build VisionClaw iOS - Fixed Meta Callback
+name: Build Clean VisionClaw iOS
 
 on:
   workflow_dispatch:
@@ -8,12 +8,11 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout VisionClaw
+      - name: Checkout latest VisionClaw
         uses: actions/checkout@v4
         with:
           repository: Intent-Lab/VisionClaw
-          ref: d105a39fa050dda82905babd0ba830c18bb2f9d2
-          fetch-depth: 1
+          ref: main
 
       - name: Create Secrets.swift
         env:
@@ -21,79 +20,36 @@ jobs:
         run: |
           set -e
 
-          cp \
-            samples/CameraAccess/CameraAccess/Secrets.swift.example \
-            samples/CameraAccess/CameraAccess/Secrets.swift
+          cp samples/CameraAccess/CameraAccess/Secrets.swift.example \
+             samples/CameraAccess/CameraAccess/Secrets.swift
 
           python3 - <<'PY'
           import os
           from pathlib import Path
 
-          path = Path("samples/CameraAccess/CameraAccess/Secrets.swift")
-          text = path.read_text()
+          p = Path("samples/CameraAccess/CameraAccess/Secrets.swift")
+          text = p.read_text()
 
           key = os.environ["GEMINI_API_KEY"].strip()
 
           if not key:
-              raise SystemExit("GEMINI_API_KEY is empty")
+              raise SystemExit("GEMINI_API_KEY is missing")
 
           text = text.replace("YOUR_GEMINI_API_KEY", key)
-          path.write_text(text)
+
+          p.write_text(text)
           PY
 
-      - name: Fix Meta callback URL
+      - name: Verify callback configuration
         run: |
-          python3 - <<'PY'
-          import plistlib
-          from pathlib import Path
-
-          path = Path("samples/CameraAccess/CameraAccess/Info.plist")
-
-          with path.open("rb") as f:
-              plist = plistlib.load(f)
-
-          plist["CFBundleURLTypes"] = [
-              {
-                  "CFBundleTypeRole": "Editor",
-                  "CFBundleURLName": "$(PRODUCT_BUNDLE_IDENTIFIER)",
-                  "CFBundleURLSchemes": [
-                      "cameraaccess",
-                      "visionclaw"
-                  ]
-              }
-          ]
-
-          if "MWDAT" not in plist:
-              plist["MWDAT"] = {}
-
-          plist["MWDAT"]["AppLinkURLScheme"] = "cameraaccess://"
-
-          with path.open("wb") as f:
-              plistlib.dump(plist, f, sort_keys=False)
-
-          print("Fixed callback schemes:")
-          print(plist["CFBundleURLTypes"])
-          print("MWDAT callback:", plist["MWDAT"]["AppLinkURLScheme"])
-          PY
-
-      - name: Verify configuration
-        run: |
-          set -e
-
-          SECRETS="samples/CameraAccess/CameraAccess/Secrets.swift"
           PLIST="samples/CameraAccess/CameraAccess/Info.plist"
-
-          if grep -q "YOUR_GEMINI_API_KEY" "$SECRETS"; then
-            echo "Gemini key was not inserted"
-            exit 1
-          fi
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :MWDAT:AppLinkURLScheme" \
-            "$PLIST"
 
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleURLTypes" \
+            "$PLIST"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :MWDAT:AppLinkURLScheme" \
             "$PLIST"
 
       - name: Resolve packages
@@ -102,13 +58,9 @@ jobs:
             -resolvePackageDependencies \
             -project samples/CameraAccess/CameraAccess.xcodeproj
 
-      - name: Clean
-        run: |
-          rm -rf build Payload VisionClaw.ipa
-
       - name: Build VisionClaw
         run: |
-          set -o pipefail
+          rm -rf build Payload VisionClaw.ipa
 
           xcodebuild \
             -project samples/CameraAccess/CameraAccess.xcodeproj \
@@ -124,11 +76,14 @@ jobs:
 
       - name: Create IPA
         run: |
-          set -e
-
           APP="build/Build/Products/Release-iphoneos/CameraAccess.app"
 
-          mkdir -p Payload
+          if [ ! -d "$APP" ]; then
+            echo "CameraAccess.app missing"
+            exit 1
+          fi
+
+          mkdir Payload
           cp -R "$APP" Payload/
 
           zip -qry VisionClaw.ipa Payload
@@ -136,6 +91,6 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Fixed-Meta
+          name: VisionClaw-Clean
           path: VisionClaw.ipa
           if-no-files-found: error
