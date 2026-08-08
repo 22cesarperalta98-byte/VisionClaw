@@ -1,4 +1,4 @@
-name: Build VisionClaw iOS
+name: Build VisionClaw iOS - Gemini Direct
 
 on:
   workflow_dispatch:
@@ -8,37 +8,87 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout
+      # Download a known working VisionClaw revision
+      - name: Checkout VisionClaw
         uses: actions/checkout@v4
+        with:
+          repository: Intent-Lab/VisionClaw
+          ref: d105a39fa050dda82905babd0ba830c18bb2f9d2
+          fetch-depth: 1
 
+      # Create the private Secrets.swift using your GitHub secret
       - name: Create Secrets.swift
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          cp samples/CameraAccess/CameraAccess/Secrets.swift.example \
-             samples/CameraAccess/CameraAccess/Secrets.swift
+          set -e
+
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "ERROR: GEMINI_API_KEY GitHub secret is missing."
+            exit 1
+          fi
+
+          cp \
+            samples/CameraAccess/CameraAccess/Secrets.swift.example \
+            samples/CameraAccess/CameraAccess/Secrets.swift
 
           python3 - <<'PY'
           import os
           from pathlib import Path
 
-          path = Path("samples/CameraAccess/CameraAccess/Secrets.swift")
+          path = Path(
+              "samples/CameraAccess/CameraAccess/Secrets.swift"
+          )
+
           text = path.read_text()
+
+          key = os.environ["GEMINI_API_KEY"].strip()
+
+          if not key:
+              raise SystemExit("GEMINI_API_KEY is empty")
+
           text = text.replace(
               "YOUR_GEMINI_API_KEY",
-              os.environ["GEMINI_API_KEY"]
+              key
           )
+
           path.write_text(text)
           PY
 
+      # Make sure the key was actually inserted
+      # This does NOT print your key
+      - name: Verify Gemini configuration
+        run: |
+          set -e
+
+          FILE="samples/CameraAccess/CameraAccess/Secrets.swift"
+
+          if grep -q "YOUR_GEMINI_API_KEY" "$FILE"; then
+            echo "ERROR: Gemini API key was not inserted."
+            exit 1
+          fi
+
+          echo "Gemini API key configured successfully."
+
+      # Resolve Apple's Swift package dependencies
       - name: Resolve packages
         run: |
           xcodebuild \
             -resolvePackageDependencies \
             -project samples/CameraAccess/CameraAccess.xcodeproj
 
-      - name: Build iPhone app
+      # Clean anything left over
+      - name: Clean build
         run: |
+          rm -rf build
+          rm -rf Payload
+          rm -f VisionClaw.ipa
+
+      # Compile unsigned iPhone app
+      - name: Build VisionClaw
+        run: |
+          set -o pipefail
+
           xcodebuild \
             -project samples/CameraAccess/CameraAccess.xcodeproj \
             -scheme CameraAccess \
@@ -51,14 +101,34 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      - name: Make IPA
+      # Convert the .app into an IPA for SideStore
+      - name: Create IPA
         run: |
-          mkdir Payload
-          cp -R build/Build/Products/Release-iphoneos/CameraAccess.app Payload/
-          zip -r VisionClaw.ipa Payload
+          set -e
 
-      - name: Upload IPA
+          APP="build/Build/Products/Release-iphoneos/CameraAccess.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: CameraAccess.app was not created."
+            exit 1
+          fi
+
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+
+          zip -qry VisionClaw.ipa Payload
+
+          if [ ! -f VisionClaw.ipa ]; then
+            echo "ERROR: IPA creation failed."
+            exit 1
+          fi
+
+          echo "VisionClaw.ipa created successfully."
+
+      # Give you the finished IPA
+      - name: Upload VisionClaw IPA
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-iPhone
+          name: VisionClaw-Gemini-Direct
           path: VisionClaw.ipa
+          if-no-files-found: error
